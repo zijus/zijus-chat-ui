@@ -5,6 +5,7 @@
 **/*.out
 **/*.zip
 **/*.png
+**/*.pyc
 .venv/*
 .ipynb_checkpoints/
 nohup.out
