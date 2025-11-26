@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ agent_name }} AI Agent</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #1f2937;
+      --muted: #6b7280;
+      --brand: #4f46e5;
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 1rem;
+      font-size: 1.25rem;
+      font-weight: bold;
+    }
+    header img {
+      height: 32px;
+      width: 32px;
+    }
+    main {
+      flex: 1;
+      display: grid;
+      place-items: center;
+      padding: 4rem 1rem;
+    }
+    section {
+      max-width: 720px;
+      width: 100%;
+      text-align: center;
+    }
+    h1 {
+      font-size: clamp(2rem, 4vw, 3rem);
+      margin: 0 0 0.75rem;
+      letter-spacing: -0.02em;
+    }
+    p {
+      margin: 0;
+      font-size: clamp(1rem, 2vw, 1.125rem);
+      color: var(--muted);
+    }
+    /* Floating “agent” button (bottom-right) */
+    .chat-agent {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      width: 64px;
+      height: 64px;
+      border: none;
+      border-radius: 50%;
+      background: var(--brand);
+      color: #fff;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.15);
+      cursor: pointer;
+      display: inline-grid;
+      place-items: center;
+      font-size: 0;
+    }
+    .chat-agent:focus-visible {
+      outline: 3px solid rgba(79,70,229,0.4);
+      outline-offset: 3px;
+    }
+    .chat-agent svg {
+      width: 28px;
+      height: 28px;
+      pointer-events: none;
+    }
+    /* Optional tooltip on hover */
+    .chat-agent::after {
+      content: "Chat";
+      position: absolute;
+      right: 80px;
+      bottom: 50%;
+      transform: translateY(50%);
+      background: #111827;
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease;
+      white-space: nowrap;
+    }
+    .chat-agent:hover::after { opacity: 1; }
+
+    footer {
+      text-align: center;
+      padding: 1rem;
+      font-size: 0.875rem;
+      color: var(--muted);
+    }
+    footer a {
+      color: var(--brand);
+      text-decoration: none;
+    }
+    footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="https://zijus-cdn.s3.eu-west-2.amazonaws.com/images/zijus-logo.png" alt="Zijus logo">
+    <span>Zijus</span>
+  </header>
+
+  <script async 
+    src="{{ zijus_javascript }}"
+    zijus-config="{{ zijus_config }}">
+  </script>
+
+  <main>
+    <section aria-labelledby="page-title">
+      <h1 id="page-title">{{ agent_name }} AI Agent</h1>
+      <p>Welcome to {{ agent_name }} AI Agent, click on the agent at the bottom right to chat.</p>
+    </section>
+  </main>
+
+  <footer>
+    Powered by <a href="https://www.zijus.com" target="_blank" rel="noopener">Zijus</a>
+  </footer>
+</body>
+</html>

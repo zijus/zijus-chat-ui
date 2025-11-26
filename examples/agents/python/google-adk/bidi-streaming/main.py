@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
+from dotenv import load_dotenv
+load_dotenv()
 
 app = FastAPI()
 
@@ -37,9 +39,21 @@ app.add_middleware(
 )
 
 # Static & Templates
-app.mount("/static", StaticFiles(directory="static"), name="static")
+#app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
 APP_NAME=os.getenv("APP_NAME", "ZijusExampleApp")
+ZIJUS_JAVASCRIPT = "https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js"
+ZIJUS_CONFIG_ENCODED = os.getenv("ZIJUS_CONFIG_ENCODED", "")
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+	return templates.TemplateResponse("index.html", {
+		"request": request, 
+		"agent_name": APP_NAME, 
+		"zijus_config": ZIJUS_CONFIG_ENCODED, 
+		"zijus_javascript": ZIJUS_JAVASCRIPT
+	})
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -393,3 +407,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.close()
         except:
             pass
+
+if __name__ == "__main__":
+	import uvicorn
+	uvicorn.run(app, host="0.0.0.0", port=8000)
