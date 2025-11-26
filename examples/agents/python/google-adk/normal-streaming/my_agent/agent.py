@@ -3,7 +3,7 @@ import os
 
 agent = LlmAgent(
     name="root_agent",
-    model="gemini-2.0-flash-exp", #Use gemini-2.5-flash-native-audio-preview-09-2025 for Audio
+    model="gemini-2.5-flash",
     description="A helpful AI assistant.",
     instruction="You are an AI Assistant"
 )
