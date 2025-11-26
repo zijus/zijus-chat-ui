@@ -1,0 +1,14 @@
+**/*.log
+**/*.csv
+**/*.gz
+**/*.tar
+**/*.out
+**/*.zip
+**/*.png
+.venv/*
+.ipynb_checkpoints/
+nohup.out
+**/*.env
+*-serviceaccount.json
+agent*json
+app.yaml
