@@ -6,7 +6,6 @@ from fastapi.templating import Jinja2Templates
 
 from google.adk.runners import Runner
 from google.adk.agents.run_config import RunConfig, StreamingMode
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from my_agent.agent import root_agent
@@ -213,20 +212,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 else: logger.error(f"Runner error: {ve}")
             except Exception as e:
                 logger.error(f"Standard execution error: {e}")
-
-            # 5. Finalize Turn
-            if accumulated_response:
-                final_msg = {
-                    "source": "assistant",
-                    "name": event.author,
-                    "content": accumulated_response,
-                    "m_id": response_m_id,
-                    "ref_m_id": m_id,
-                    "user_id": user_id,
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                    "type": "TextMessage"
-                }
-                # Placeholder to log final_msg to your DB if needed
 
 
     except WebSocketDisconnect:

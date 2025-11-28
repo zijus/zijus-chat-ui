@@ -156,13 +156,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
                 
                 if msg_type == 'feedback':
-                    await save_feedback() # Placeholder function
+                    await save_feedback() # Placeholder 
                     continue
 
                 if msg_type == 'send_email':
                     try:
                         email_body = base64.b64decode(data_json.get("email_body")).decode("utf-8")
-                        await send_email() # Placeholder function
+                        await send_email() # Placeholder
                     except Exception as e:
                         logger.error(f"Email error: {e}")
                     continue
@@ -183,6 +183,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 data=audio_bytes
                             )
                             
+                            
                             # 4. Send to ADK
                             live_request_queue.send_realtime(audio_blob)
                             
@@ -191,7 +192,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     continue
                 
-                # 1. URL Extraction
                 content_text = data_json.get('content', '')
 
                 # 2. Prepare ADK Request parts
@@ -208,7 +208,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         if mime.startswith('image/'):
                             image_blob = types.Blob(mime_type=mime, data=att_data)
                             live_request_queue.send_realtime(image_blob)
-                            sent_to_adk = True
                             content_text += " [Image Attached]"
                         else:
                             # If Doc -> Extract text
@@ -224,27 +223,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     content = types.Content(parts=[content_part], role="user")
                     live_request_queue.send_content(content)
 
-                # E. Broadcast & Log User Message
-                if msg_type != 'AudioMessage':
-                    user_msg_obj = {
-                        "source": "user",
-                        "content": data_json.get('content', '') + (' [File Attached]' if 'attachment' in data_json else ''),
-                        "m_id": m_id,
-                        "ts": ts_incoming_message,
-                        "user_id": user_id,
-                        "type": "TextMessage"
-                    }
-                    
         except WebSocketDisconnect:
             logger.info("Upstream: Client disconnected")
         except Exception as e:
             logger.error(f"Error in upstream_task: {e}")
+            # Keep alive unless critical
 
     async def downstream_task():
             """Handles events FROM Agent (ADK) -> User (WebSocket)"""
             try:
-                current_response_id = str(uuid.uuid4())
-                accumulated_text = ""
+                current_input_response_id = str(uuid.uuid4())
+                current_output_response_id = str(uuid.uuid4())
+                accumulated_input_text = ""
+                accumulated_output_text = ""
                 # Helper to check if a part is an internal thought
                 def is_thought(part):
                     return getattr(part, 'thought', False)
@@ -255,14 +246,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     live_request_queue=live_request_queue,
                     run_config=run_config
                 ):
+                    # =================================================================
+                    # SCENARIO A: Native Audio Model
+                    # =================================================================
                     if event.input_transcription:
                         transcription = getattr(event.input_transcription, 'text', None)
                         if transcription:
-                            accumulated_text += transcription
+                            if not accumulated_input_text:
+                                transcription = "🎤 " + transcription
+                            accumulated_input_text += transcription
                             chunk_msg = {
                                 "source": "user",
                                 "content": transcription,
-                                "m_id": current_response_id,
+                                "m_id": current_input_response_id,
+                                "is_transcription": True,
                                 "type": "TextMessage",
                                 "ts": datetime.now(timezone.utc).isoformat()
                             }
@@ -275,12 +272,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Adjust based on the actual object structure, assuming .text based on your JSON
                             transcription = getattr(event.output_transcription, 'text', None)
                             if transcription:
-                                accumulated_text += transcription
+                                accumulated_output_text += transcription
                                 chunk_msg = {
                                     "source": "assistant",
                                     "name": event.author,
                                     "content": transcription,
-                                    "m_id": current_response_id,
+                                    "m_id": current_output_response_id,
+                                    "is_transcription": True,
                                     "type": "TextMessage",
                                     "ts": datetime.now(timezone.utc).isoformat()
                                 }
@@ -303,7 +301,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                         "name": event.author,
                                         "data": b64_audio,
                                         "mime_type": mime_type,
-                                        "m_id": current_response_id,
+                                        "m_id": current_output_response_id,
                                         "type": "AudioMessage",
                                         "ts": datetime.now(timezone.utc).isoformat()
                                     }
@@ -314,31 +312,24 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                         if event.turn_complete or is_interrupted:
                             if is_interrupted:
-                                accumulated_text += "* ⏸️ Interrupted*"
                                 interruption_msg = {
                                     "source": "assistant",
-                                    "name": event.author,
-                                    "content": "* ⏸️ Interrupted*",
-                                    "m_id": current_response_id,
-                                    "type": "TextMessage", 
+                                    "m_id": current_output_response_id,
+                                    "type": "InterruptMessage", 
                                     "ts": datetime.now(timezone.utc).isoformat()
                                 }
                                 await websocket.send_json(interruption_msg)
-                            # Finalize the transaction in DB
-                            final_msg = {
-                                "source": "assistant",
-                                "name": event.author,
-                                "content": accumulated_text, # Save the full text transcript
-                                "m_id": current_response_id,
-                                "user_id": user_id,
-                                "ts": datetime.now(timezone.utc).isoformat(),
-                                "type": "TextMessage" # We save as text for history readability
-                            }
+
                             
                             # Reset for next turn
-                            current_response_id = str(uuid.uuid4())
-                            accumulated_text = ""
+                            current_input_response_id = str(uuid.uuid4())
+                            accumulated_input_text = ""
+                            current_output_response_id = str(uuid.uuid4())
+                            accumulated_output_text = ""
 
+                    # =================================================================
+                    # SCENARIO B: Text/Multimodal Model (Standard)
+                    # =================================================================
                     else:
                         #print("Processing Standard Text Event:", event)
                         is_partial = getattr(event, 'partial', False)
@@ -355,12 +346,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             if text_chunk_for_this_event:
                                 # If Partial: Send to client AND accumulate
                                 if is_partial:
-                                    accumulated_text += text_chunk_for_this_event
+                                    accumulated_output_text += text_chunk_for_this_event
                                     chunk_msg = {
                                         "source": "assistant",
                                         "name": event.author,
                                         "content": text_chunk_for_this_event,
-                                        "m_id": current_response_id,
+                                        "m_id": current_output_response_id,
                                         "type": "TextMessage",
                                         "ts": datetime.now(timezone.utc).isoformat()
                                     }
@@ -370,20 +361,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
                         # 2. Handle End of Turn (turnComplete)
                         if event.turn_complete:
-                            final_msg = {
-                                "source": "assistant",
-                                "name": event.author,
-                                "content": accumulated_text,
-                                "m_id": current_response_id,
-                                "user_id": user_id,
-                                "ts": datetime.now(timezone.utc).isoformat(),
-                                "type": "TextMessage"
-                            }
-                            # Placeholder for processing final_msg if needed
-                            
                             # Reset
-                            current_response_id = str(uuid.uuid4())
-                            accumulated_text = ""
+                            current_output_response_id = str(uuid.uuid4())
+                            current_input_response_id = str(uuid.uuid4())
+                            accumulated_output_text = ""
+                            accumulated_input_text = ""
+
 
             except Exception as e:
                 logger.error(f"Error in downstream_task: {e}")
