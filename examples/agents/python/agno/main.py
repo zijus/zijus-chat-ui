@@ -16,7 +16,7 @@ from agno.media import Image as AgnoImage
 from my_agent.agent import root_agent
 
 # --- Utilities ---
-from utils import generate_jwt, validate_jwt, extract_text_from_attachment
+from utils import generate_jwt, validate_jwt, extract_text_from_attachment, save_feedback, send_email
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -110,6 +110,39 @@ async def websocket_endpoint(websocket: WebSocket):
             # B. Prepare Inputs for Agno
             prompt_text = data_json.get('content', '')
             images = []
+
+            if msg_type == 'session':
+                continue
+            
+            if msg_type == 'feedback':
+                await save_feedback() # Placeholder 
+                continue
+
+            if msg_type == 'send_email':
+                try:
+                    email_body = base64.b64decode(data_json.get("email_body")).decode("utf-8")
+                    await send_email() # Placeholder
+                except Exception as e:
+                    logger.error(f"Email error: {e}")
+                continue
+
+            if msg_type == 'AudioMessage':
+                try:
+                    # 1. Decode Base64
+                    audio_b64 = data_json.get('data', '')
+                    if audio_b64:
+                        audio_bytes = base64.b64decode(audio_b64)
+                        
+                        # 2. Get Mime Type (default to 16k if missing)
+                        mime_type = data_json.get('mimeType', 'audio/pcm;rate=16000')
+                        
+                        logger.info(f"Audio message received: {len(audio_bytes)} bytes, mime: {mime_type}")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing AudioMessage: {e}")
+                
+                continue
+
 
             if msg_type == 'TextMessage':
                 # Handle Attachments

@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ agent_name }} AI Agent</title>
+
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #111927;
+      --muted: #6b7280;
+      --brand: #4f46e5;
+      --brand-light: #6366f1;
+      --border: #e5e7eb;
+      --code-bg: #1f2937;
+      --code-fg: #f3f4f6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: Inter, system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: #fff;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    header img {
+      height: 36px;
+      width: 36px;
+    }
+    header span {
+      font-size: 1.4rem;
+      font-weight: 600;
+    }
+
+    /* Hero Section */
+    .hero {
+      padding: 4rem 1.5rem 3rem;
+      text-align: center;
+      max-width: 720px;
+      margin: auto;
+    }
+    .hero h1 {
+      font-size: clamp(2.2rem, 4vw, 3rem);
+      margin: 0 0 1rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .hero p {
+      color: var(--muted);
+      font-size: 1.15rem;
+      max-width: 640px;
+      margin: auto;
+    }
+
+    /* Instruction Container */
+    .instructions {
+      max-width: 840px;
+      margin: 2rem auto;
+      background: #fafafa;
+      border: 1px solid var(--border);
+      padding: 2rem;
+      border-radius: 12px;
+    }
+    .instructions h2 {
+      margin-top: 0;
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+    .instructions p {
+      margin-bottom: 1rem;
+    }
+
+    /* CTA Button */
+    .cta-btn {
+      display: inline-block;
+      background: var(--brand);
+      color: white;
+      padding: 0.65rem 1.2rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 500;
+      margin-bottom: 1.5rem;
+    }
+    .cta-btn:hover {
+      background: var(--brand-light);
+    }
+
+    /* Code Block */
+    pre {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      position: relative;
+      margin-bottom: 1rem;
+    }
+
+    /* Copy Button */
+    .copy-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: var(--brand);
+      color: white;
+      border: none;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .copy-btn:hover {
+      background: var(--brand-light);
+    }
+    .copy-success {
+      color: green;
+      font-size: 0.85rem;
+      display: none;
+    }
+
+    /* Footer */
+    footer {
+      margin-top: auto;
+      padding: 1.5rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      border-top: 1px solid var(--border);
+    }
+    footer a {
+      color: var(--brand);
+      text-decoration: none;
+    }
+
+    /* Floating agent button */
+    .chat-agent {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      width: 68px;
+      height: 68px;
+      border: none;
+      border-radius: 50%;
+      background: var(--brand);
+      color: #fff;
+      box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+      cursor: pointer;
+      display: inline-grid;
+      place-items: center;
+    }
+    .chat-agent svg {
+      width: 30px;
+      height: 30px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Header -->
+  <header>
+    <div class="header-left">
+      <img src="https://zijus-cdn.s3.eu-west-2.amazonaws.com/images/zijus-logo.png" alt="Zijus logo">
+      <span>Zijus</span>
+    </div>
+  </header>
+
+  <!-- Chat Agent Script -->
+  <script async 
+    src="{{ zijus_javascript }}"
+    zijus-config="{{ zijus_config }}">
+  </script>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <h1>{{ agent_name }} AI Agent</h1>
+    <p>Your AI assistant is ready. Click the chat icon in the bottom-right corner to start talking to your agent.</p>
+  </section>
+
+  <!-- Instructions -->
+  <section class="instructions">
+    <h2>Embed This Chat Agent on Your Website</h2>
+
+    <p>
+      You can generate your own <code>zijus-config</code> using the configuration builder:
+    </p>
+
+    <a class="cta-btn" href="https://www.zijus.com/zijus-chat-ui" target="_blank" rel="noopener">
+      Generate Config →
+    </a>
+
+    <p>
+      Then add the following script anywhere in your webpage
+      (preferably before <code>&lt;/body&gt;</code>):
+    </p>
+
+    <pre id="embed-code">
+&lt;script async 
+  src="{{ zijus_javascript }}"
+  zijus-config="{{ zijus_config }}"&gt;
+&lt;/script&gt;
+      <button class="copy-btn" onclick="copyEmbedCode()">Copy</button>
+    </pre>
+
+    <div id="copy-success" class="copy-success">Copied!</div>
+  </section>
+
+
+  <!-- Footer -->
+  <footer>
+    ❤️ from <a href="https://www.zijus.com" target="_blank">Zijus</a>
+  </footer>
+
+  <!-- Copy Script -->
+  <script>
+    function copyEmbedCode() {
+      const code = document.getElementById('embed-code').innerText.trim();
+      navigator.clipboard.writeText(code).then(() => {
+        const success = document.getElementById('copy-success');
+        success.style.display = 'block';
+        setTimeout(() => success.style.display = 'none', 2000);
+      });
+    }
+  </script>
+
+</body>
+</html>

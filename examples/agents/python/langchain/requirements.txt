@@ -1,0 +1,8 @@
+fastapi>=0.115.12
+uvicorn[standard]>=0.34.0
+python-dotenv>=1.0.1
+langchain==1.1.0
+langchain-openai==1.1.0
+langgraph-checkpoint==3.0.1
+Jinja2==3.1.6
+PyJWT==2.10.1

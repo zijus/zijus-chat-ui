@@ -8,6 +8,7 @@
 **/*.png
 **/*.pyc
 .venv/*
+**/.venv/
 .ipynb_checkpoints/
 nohup.out
 **/*.env

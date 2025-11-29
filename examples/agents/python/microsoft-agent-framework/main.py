@@ -4,12 +4,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from google.adk.runners import Runner
-from google.adk.agents.run_config import RunConfig, StreamingMode
-from google.adk.sessions import InMemorySessionService
-from google.genai import types
-from my_agent.agent import root_agent
-
+from agent_framework import ChatMessage, TextContent, DataContent
+from contextlib import asynccontextmanager
 import os
 import json
 import asyncio
@@ -26,7 +22,19 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 
-app = FastAPI()
+# Import the agent
+from my_agent.agent import root_agent
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup code
+    logger.info("Starting up FastAPI application...")
+    yield
+    # Shutdown code
+    logger.info("Shutting down FastAPI application...")
+    await root_agent.close()
+
+app = FastAPI(lifespan=lifespan)
 
 # CORS
 app.add_middleware(
@@ -44,14 +52,53 @@ templates = Jinja2Templates(directory="templates")
 APP_NAME=os.getenv("APP_NAME", "ZijusExampleApp")
 ZIJUS_JAVASCRIPT = "https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js"
 ZIJUS_CONFIG_ENCODED = os.getenv("ZIJUS_CONFIG_ENCODED", "")
+
+def extract_text_from_chunk(chunk):
+    """Safely extract text content from various chunk types"""
+    # Try direct text attribute first
+    if hasattr(chunk, 'text') and chunk.text:
+        return chunk.text
+    
+    # Try content attribute
+    if hasattr(chunk, 'content'):
+        content = chunk.content
+        # If content has text attribute
+        if hasattr(content, 'text') and content.text:
+            return content.text
+        # If content is a string
+        elif isinstance(content, str):
+            return content
+    
+    # Try delta attribute (but check structure first)
+    if hasattr(chunk, 'delta'):
+        delta = chunk.delta
+        # Check if delta has text attribute
+        if hasattr(delta, 'text') and delta.text:
+            return delta.text
+        # Check if delta has content that might contain text
+        elif hasattr(delta, 'content'):
+            content = delta.content
+            if hasattr(content, 'text') and content.text:
+                return content.text
+    
+    # Final fallback - string representation
+    try:
+        chunk_str = str(chunk)
+        if chunk_str and chunk_str not in ['', 'None']:
+            return chunk_str
+    except:
+        pass
+    
+    return None
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-	return templates.TemplateResponse("index.html", {
-		"request": request, 
-		"agent_name": APP_NAME, 
-		"zijus_config": ZIJUS_CONFIG_ENCODED, 
-		"zijus_javascript": ZIJUS_JAVASCRIPT
-	})
+    return templates.TemplateResponse("index.html", {
+        "request": request, 
+        "agent_name": APP_NAME, 
+        "zijus_config": ZIJUS_CONFIG_ENCODED, 
+        "zijus_javascript": ZIJUS_JAVASCRIPT
+    })
 
 
 @app.websocket("/ws")
@@ -100,45 +147,18 @@ async def websocket_endpoint(websocket: WebSocket):
     if not user_id:
         user_id = "anon" # Default user_id if not provided in JWT
 
-
-    # Using InMemory for ADK specific state, while using your DB for chat history/logging
-    session_service = InMemorySessionService() 
-    runner = Runner(
-        app_name=APP_NAME,
-        agent=root_agent, # type: ignore
-        session_service=session_service
-    )
-
-    # Initialize ADK session
-    adk_session = await session_service.get_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
-    if not adk_session:
-        adk_session = await session_service.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
-    # Determine Modality (Native Audio vs Text)
-    model_name = getattr(root_agent, 'model', 'gemini-2.0-flash-exp') # Fallback if model not set
-
-    is_native_audio = "native-audio" in model_name.lower()
-    response_modalities = ["AUDIO"] if is_native_audio else ["TEXT"]
-
-    run_config = RunConfig(
-                streaming_mode=StreamingMode.SSE,  # <--- This enables text streaming for standard models
-                response_modalities=response_modalities,      # Standard models only support TEXT here
-    )
-
     try:
         while True:
-            # Wait for User Message
             data = await websocket.receive_text()
             ts_incoming_message = datetime.now(timezone.utc).isoformat()
-            
+
             try:
                 data_json = json.loads(data)
-            except: continue
+            except json.JSONDecodeError:
+                continue
+
             m_id = data_json.get('m_id', str(uuid.uuid4()))
             msg_type = data_json.get('type')
-            
-            # Build ADK Content Object
-            parts = []
-            user_log_content = ""
 
             if msg_type == 'session':
                 continue
@@ -171,86 +191,80 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.error(f"Error processing AudioMessage: {e}")
                 
                 continue
+            
+            content_text = data_json.get('content', '')
 
-            if msg_type == 'TextMessage':
-                # Handle Text/Attachments
-                content_text = data_json.get('content', '')
-                user_log_content = content_text
-                
-                # If attachment is image:
-                if 'attachment' in data_json:
-                    att = data_json['attachment']
-                    if att['type'].startswith('image/'):
-                        parts.append(types.Part(
-                            inline_data=types.Blob(
-                                mime_type=att['type'], 
-                                data=base64.b64decode(att['data'])
-                            )
+            # Prepare message parts for agent
+            contents = []
+            
+            # Handle Attachments
+            if 'attachment' in data_json:
+                att = data_json['attachment']
+                try:
+                    att_data = base64.b64decode(att['data'])
+                    mime = att.get('type', 'application/octet-stream')
+                    print(f"Attachment received: {mime}, size: {len(att_data)} bytes")
+                    # If Image -> Use DataContent
+                    if mime.startswith('image/'):
+                        contents.append(DataContent(
+                            data=att_data,
+                            media_type=mime
                         ))
-                        user_log_content += " [Image]"
+                        logger.info(f"Processing image attachment: {mime}, size: {len(att_data)} bytes")
                     else:
-                        att_data = base64.b64decode(att['data'])
-                        mime = att.get('type', 'application/octet-stream')
                         # If Doc -> Extract text
                         att_file = BytesIO(att_data)
                         extracted_text = await extract_text_from_attachment() # Placeholder function
                         content_text += f"\n[Attachment Content]: {extracted_text}"
-
+                except Exception as e:
+                    logger.error(f"Attachment error: {e}")
                 
-                if content_text:
-                    parts.append(types.Part(text=content_text))
 
-            if not parts: continue
+            # Add text content if provided
+            if content_text:
+                contents.append(TextContent(text=content_text))
 
-            # Execute Agent (Synchronous runner.run wrapped in thread)
-            new_message = types.Content(role="user", parts=parts)
+            if not contents:
+                continue
+
+            # C. Run Agent with Streaming - USING PERSISTENT THREAD FOR SESSION
             response_m_id = str(uuid.uuid4())
-            accumulated_response = ""
-        
-            try:
-                # Iterate the generator returned by run_standard_adk
-                async for event in runner.run_async(
-                    user_id=user_id,
-                    session_id=session_id,
-                    new_message=new_message,
-                    run_config=run_config
-                ):
-                    is_partial = getattr(event, 'partial', False)
-                    
-                    text_chunk = ""
-                    
-                    # Extract Text
-                    if hasattr(event, 'content') and event.content:
-                        for part in event.content.parts: #type: ignore
-                            if part.text: 
-                                text_chunk += part.text
-                    
-                    # Stream Chunk
-                    if text_chunk:
-                        if is_partial:
-                            accumulated_response += text_chunk
-                            await websocket.send_json({
-                                "source": "assistant",
-                                "name": event.author,
-                                "content": text_chunk,
-                                "m_id": response_m_id,
-                                "type": "TextMessage",
-                                "ts": datetime.now(timezone.utc).isoformat()
-                            })
             
-            except ValueError as ve:
-                if "Session not found" in str(ve):
-                    logger.warning("Session ended during stream")
-                else: logger.error(f"Runner error: {ve}")
-            except Exception as e:
-                logger.error(f"Standard execution error: {e}")
+            try:
+                # Create the chat message
+                chat_message = ChatMessage(
+                    role="user",
+                    contents=contents
+                )
+                
+                # Use the imported root_agent with session_id to maintain conversation context
+                logger.info(f"Running agent for session: {session_id}")
+                async for chunk in root_agent.run_stream(chat_message, session_id=session_id):
+                    # Use the safe text extraction function
+                    text_content = extract_text_from_chunk(chunk)
+                    
+                    if text_content:
+                        await websocket.send_json({
+                            "source": "assistant",
+                            "content": text_content,
+                            "m_id": response_m_id,
+                            "type": "TextMessage", 
+                            "ts": datetime.now(timezone.utc).isoformat()
+                        })
 
+            except Exception as e:
+                logger.error(f"Agent execution error: {e}")
+                await websocket.send_json({
+                    "source": "assistant", 
+                    "content": "An error occurred while processing your request.", 
+                    "type": "error"
+                })
 
     except WebSocketDisconnect:
-        pass
+        logger.info(f"Client disconnected: {session_id}")
     finally:
         pass
 
 if __name__ == "__main__":
-	import uvicorn
-	uvicorn.run(app, host="0.0.0.0", port=8000)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
