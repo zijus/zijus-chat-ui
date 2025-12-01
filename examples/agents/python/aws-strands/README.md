@@ -57,11 +57,11 @@ my_agent/agent.py
 
 2. Modify the agent’s logic as desired:
 
-   – Add tools
-   – Change the system prompt
-   – Add memory, retrieval, or workflows
-   – Integrate external APIs
-   – Customize response behavior
+   - Add tools
+   - Change the system prompt
+   - Add memory, retrieval, or workflows
+   - Integrate external APIs
+   - Customize response behavior
 
 3. Save your changes.
    The FastAPI server will load this agent when it starts.

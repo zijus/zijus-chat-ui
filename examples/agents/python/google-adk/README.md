@@ -4,8 +4,8 @@ This directory contains a **FastAPI application** demonstrating how to integrate
 
 The examples are organized into two folders:
 
-* `bidi-streaming` – Examples using **bidirectional streaming**
-* `normal-streaming` – Examples using **normal streaming**
+* `bidi-streaming` - Examples using **bidirectional streaming**
+* `normal-streaming` - Examples using **normal streaming**
 
 ---
 
@@ -62,10 +62,10 @@ my_agent/agent.py
 
 2. Modify the agent’s logic as desired:
 
-   – Configure prompts and messages
-   – Add or update tools
-   – Choose streaming method based on folder (`bidi-streaming` or `normal-streaming`)
-   – Customize workflows, responses, or external API calls
+   - Configure prompts and messages
+   - Add or update tools
+   - Choose streaming method based on folder (`bidi-streaming` or `normal-streaming`)
+   - Customize workflows, responses, or external API calls
 
 3. Save your changes.
    The FastAPI server will load this agent when it starts.
