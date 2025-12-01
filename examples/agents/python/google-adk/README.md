@@ -61,6 +61,7 @@ my_agent/agent.py
 ```
 
 2. Modify the agent’s logic as desired:
+
    – Configure prompts and messages
    – Add or update tools
    – Choose streaming method based on folder (`bidi-streaming` or `normal-streaming`)
@@ -98,7 +99,7 @@ This matches the default UI configuration.
 
 Visit:
 
-👉 **[https://www.zijus.com/zijus-chat-ui?utm_source=github](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
+👉 **[https://www.zijus.com/zijus-chat-ui](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
 
 Use the generator to create a **custom embed configuration** that matches your preferred style, colors, or layout.
 Replace the generated config in the `.env` file as needed.
