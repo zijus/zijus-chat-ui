@@ -1,6 +1,6 @@
-# Langchain + Zijus Chat UI Examples
+# LangChain + Zijus Chat UI Examples
 
-This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **Langchain** Agent.
+This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **LangChain Agent**.
 
 ---
 
@@ -37,6 +37,41 @@ cp env-sample .env
 
 ---
 
+## 🧩 Agent Setup (Required Before Running)
+
+The core logic for your LangChain agent lives inside:
+
+```
+my_agent/agent.py
+```
+
+This file contains the **agent definition**, including chains, tools, model configuration, response logic, and behavior.
+
+### ✅ Before starting the FastAPI server:
+
+1. Open the file:
+
+```
+my_agent/agent.py
+```
+
+2. Modify the agent’s logic as desired:
+   – Add tools
+   – Configure or replace chains
+   – Change prompts
+   – Integrate external APIs
+   – Customize response behavior
+
+3. Save your changes.
+   The FastAPI server will load this agent when it starts.
+
+> If running with `--reload`, your changes to `agent.py` will auto-apply.
+
+📘 **Need help with LangChain features, chains, or agent documentation?**
+See the official docs: **[https://docs.langchain.com/oss/python/langchain/overview](https://docs.langchain.com/oss/python/langchain/overview)**
+
+---
+
 ## 🧪 Running the Examples
 
 Start the FastAPI app:
@@ -59,10 +94,10 @@ This matches the default UI configuration.
 
 Visit:
 
-👉 **[https://www.zijus.com/zijus-chat-ui](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
+👉 **[https://www.zijus.com/zijus-chat-ui?utm_source=github](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
 
 Use the generator to create a **custom embed configuration** that matches your preferred style, colors, or layout.
-Replace the generated config in the .env file as needed.
+Replace the generated config in the `.env` file as needed.
 
 ---
 
@@ -74,11 +109,10 @@ Once the server is running, open your browser:
 http://localhost:8000
 ```
 
-You should now see the **Zijus Chat UI** and be able to interact with your Langchain Agent
+You should now see the **Zijus Chat UI** and be able to interact with your LangChain agent.
 
 ---
 
-## 💬 Placeholder Functions
+## 🔧 Placeholder Functions
 
-The `utils.py` file has some placeholder helper functions that need to be updated as desired
-
+The `utils.py` file contains placeholder helper functions that you may update or replace based on your needs.

@@ -1,6 +1,6 @@
-# Agno + Zijus Chat UI Examples
+# Microsoft AutoGen + Zijus Chat UI Example
 
-This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **Agno Agent**.
+This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **Microsoft AutoGen Agent**.
 
 ---
 
@@ -39,13 +39,13 @@ cp env-sample .env
 
 ## 🧩 Agent Setup (Required Before Running)
 
-The core logic for your Agno agent lives inside:
+The core logic for your Microsoft AutoGen agent lives inside:
 
 ```
 my_agent/agent.py
 ```
 
-This file contains the **agent definition**, including model configuration, tools, response logic, and behavior.
+This file contains the **agent definition**, including AutoGen agents, model setup, tools, custom logic, and interaction flow.
 
 ### ✅ Before starting the FastAPI server:
 
@@ -56,23 +56,23 @@ my_agent/agent.py
 ```
 
 2. Modify the agent’s logic as desired:
-   – Add tools
-   – Change the system prompt
-   – Add memory, retrieval, or workflows
-   – Integrate external APIs
-   – Customize response behavior
+   – Add or configure AutoGen agents
+   – Change system messages or personality
+   – Add tools or functions
+   – Customize multi-agent workflows
+   – Integrate external services or APIs
 
 3. Save your changes.
    The FastAPI server will load this agent when it starts.
 
 > If running with `--reload`, your changes to `agent.py` will auto-apply.
 
-📘 **Need help with Agno Agent features, syntax, or capabilities?**
-See the official documentation: **[https://docs.agno.com](https://docs.agno.com)**
+📘 **Need help with AutoGen capabilities, syntax, or multi-agent patterns?**
+See the official documentation: **[https://microsoft.github.io/autogen/stable/](https://microsoft.github.io/autogen/stable/)**
 
 ---
 
-## 🧪 Running the Examples
+## 🧪 Running the Example
 
 Start the FastAPI app:
 
@@ -109,7 +109,7 @@ Once the server is running, open your browser:
 http://localhost:8000
 ```
 
-You should now see the **Zijus Chat UI** and be able to interact with your Agno agent.
+You should now see the **Zijus Chat UI** and be able to interact with your AutoGen agent.
 
 ---
 

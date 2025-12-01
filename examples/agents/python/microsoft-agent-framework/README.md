@@ -1,6 +1,6 @@
-# Microsoft Agent Framework + Zijus Chat UI Examples
+# Microsoft Agent Framework + Zijus Chat UI Example
 
-This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **Microsoft Agent Framework**.
+This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **Microsoft Agent Framework agent**.
 
 ---
 
@@ -37,7 +37,41 @@ cp env-sample .env
 
 ---
 
-## 🧪 Running the Examples
+## 🧩 Agent Setup (Required Before Running)
+
+The core logic for your Microsoft Agent Framework agent lives inside:
+
+```
+my_agent/agent.py
+```
+
+This file contains the **agent definition**, including model configuration, tools, dialogue logic, and workflow setup.
+
+### ✅ Before starting the FastAPI server:
+
+1. Open the file:
+
+```
+my_agent/agent.py
+```
+
+2. Modify the agent’s logic as desired:
+   – Configure dialogs and prompts
+   – Add or update tools
+   – Customize workflow or response behavior
+   – Integrate external APIs or services
+
+3. Save your changes.
+   The FastAPI server will load this agent when it starts.
+
+> If running with `--reload`, your changes to `agent.py` will auto-apply.
+
+📘 **Need help with Microsoft Agent Framework capabilities or setup?**
+See the official documentation: **[https://learn.microsoft.com/en-us/agent-framework/](https://learn.microsoft.com/en-us/agent-framework/)**
+
+---
+
+## 🧪 Running the Example
 
 Start the FastAPI app:
 
@@ -59,10 +93,10 @@ This matches the default UI configuration.
 
 Visit:
 
-👉 **[https://www.zijus.com/zijus-chat-ui](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
+👉 **[https://www.zijus.com/zijus-chat-ui?utm_source=github](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
 
 Use the generator to create a **custom embed configuration** that matches your preferred style, colors, or layout.
-Replace the generated config in the .env file as needed.
+Replace the generated config in the `.env` file as needed.
 
 ---
 
@@ -74,11 +108,10 @@ Once the server is running, open your browser:
 http://localhost:8000
 ```
 
-You should now see the **Zijus Chat UI** and be able to interact with your Microsoft Agent Framework Agent
+You should now see the **Zijus Chat UI** and be able to interact with your Microsoft Agent Framework agent.
 
 ---
 
-## 💬 Placeholder Functions
+## 🔧 Placeholder Functions
 
-The `utils.py` file has some placeholder helper functions that need to be updated as desired
-
+The `utils.py` file contains placeholder helper functions that you may update or replace based on your needs.

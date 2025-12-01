@@ -1,6 +1,6 @@
-# Agno + Zijus Chat UI Examples
+# AWS Strands + Zijus Chat UI Examples
 
-This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **Agno Agent**.
+This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **AWS Strands Agent**.
 
 ---
 
@@ -39,7 +39,7 @@ cp env-sample .env
 
 ## 🧩 Agent Setup (Required Before Running)
 
-The core logic for your Agno agent lives inside:
+The core logic for your AWS Strands agent lives inside:
 
 ```
 my_agent/agent.py
@@ -67,8 +67,8 @@ my_agent/agent.py
 
 > If running with `--reload`, your changes to `agent.py` will auto-apply.
 
-📘 **Need help with Agno Agent features, syntax, or capabilities?**
-See the official documentation: **[https://docs.agno.com](https://docs.agno.com)**
+📘 **Need help with Strands Agent features, syntax, or capabilities?**
+See the official documentation: **[https://strandsagents.com/latest/](https://strandsagents.com/latest/)**
 
 ---
 
@@ -109,7 +109,7 @@ Once the server is running, open your browser:
 http://localhost:8000
 ```
 
-You should now see the **Zijus Chat UI** and be able to interact with your Agno agent.
+You should now see the **Zijus Chat UI** and be able to interact with your Strands agent.
 
 ---
 

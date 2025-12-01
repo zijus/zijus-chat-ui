@@ -1,12 +1,11 @@
 # Google ADK + Zijus Chat UI Examples
 
-This directory contains **two example FastAPI applications** demonstrating how to integrate the **Zijus Chat UI** with a simple **Google ADK agent**.
-You can choose between:
+This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with **Google ADK agents**.
 
-1. **normal-streaming** – standard text streaming
-2. **bidi-streaming** – bidirectional streaming (UI → backend → UI)
+The examples are organized into two folders:
 
-Both examples run independently and include a working FastAPI server + sample ADK agent + Zijus Chat UI configuration.
+* `bidi-streaming` – Examples using **bidirectional streaming**
+* `normal-streaming` – Examples using **normal streaming**
 
 ---
 
@@ -22,19 +21,13 @@ venv\Scripts\activate         # Windows
 
 ### 2. Install dependencies
 
-Each folder has its own `requirements.txt`.
-Install dependencies **inside the folder you want to run**:
-
-```bash
-cd normal-streaming          # or: cd bidi-streaming
-pip install -r requirements.txt
-```
+Install dependencies from `requirements.txt` in the respective folder you want to run (`bidi-streaming` or `normal-streaming`).
 
 ---
 
 ## ⚙️ Environment Setup
 
-Each example directory contains an `env-sample` file.
+There is a sample `env-sample` file in each folder.
 
 1. **Copy it:**
 
@@ -49,17 +42,43 @@ cp env-sample .env
 
 ---
 
-## 🧪 Running the Examples
+## 🧩 Agent Setup (Required Before Running)
 
-Move into the example you want to run:
+The core logic for your Google ADK agent lives inside:
 
-```bash
-cd normal-streaming
-# or
-cd bidi-streaming
+```
+my_agent/agent.py
 ```
 
-Start the FastAPI app:
+This file contains the **agent definition**, including model configuration, streaming setup, tools, and interaction logic.
+
+### ✅ Before starting the FastAPI server:
+
+1. Open the file:
+
+```
+my_agent/agent.py
+```
+
+2. Modify the agent’s logic as desired:
+   – Configure prompts and messages
+   – Add or update tools
+   – Choose streaming method based on folder (`bidi-streaming` or `normal-streaming`)
+   – Customize workflows, responses, or external API calls
+
+3. Save your changes.
+   The FastAPI server will load this agent when it starts.
+
+> If running with `--reload`, your changes to `agent.py` will auto-apply.
+
+📘 **Need help with Google ADK capabilities or streaming setup?**
+See the official documentation: **[https://google.github.io/adk-docs/](https://google.github.io/adk-docs/)**
+
+---
+
+## 🧪 Running the Examples
+
+Navigate to the folder you want to run (`bidi-streaming` or `normal-streaming`) and start the FastAPI app:
 
 ```bash
 uvicorn main:app --reload
@@ -79,10 +98,10 @@ This matches the default UI configuration.
 
 Visit:
 
-👉 **[https://www.zijus.com/zijus-chat-ui](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
+👉 **[https://www.zijus.com/zijus-chat-ui?utm_source=github](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
 
 Use the generator to create a **custom embed configuration** that matches your preferred style, colors, or layout.
-Replace the generated config in the .env file as needed.
+Replace the generated config in the `.env` file as needed.
 
 ---
 
@@ -94,16 +113,13 @@ Once the server is running, open your browser:
 http://localhost:8000
 ```
 
-You should now see the **Zijus Chat UI** and be able to interact with your ADK agent in either:
+You should now see the **Zijus Chat UI** and be able to interact with your Google ADK agent.
 
-* **normal streaming mode**, or
-* **bidirectional streaming mode**
-
-depending on which example you launched.
+* For **bidirectional streaming**, use the examples in `bidi-streaming`
+* For **normal streaming**, use the examples in `normal-streaming`
 
 ---
 
-## 💬 Placeholder Functions
+## 🔧 Placeholder Functions
 
-The `utils.py` file has some placeholder helper functions that need to be updated as desired
-
+The `utils.py` file contains placeholder helper functions that you may update or replace based on your needs.
