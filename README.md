@@ -175,13 +175,15 @@ This tool lets you configure:
 * Layout & behavior
 * Animation options
 
+Note: For the WebSocket URL, use `http://localhost:8000/ws` if you are running the agent locally
+
 ![Zijus Chat UI Screenshot](./chatui-screenshot.png)
 
 Then it gives you a snippet such as:
 
 ```html
 <script async src="https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js" zijus-config='...'>
-    
+
 </script>
 ```
 
