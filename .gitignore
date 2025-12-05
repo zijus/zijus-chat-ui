@@ -5,7 +5,6 @@
 **/*.tar
 **/*.out
 **/*.zip
-**/*.png
 **/*.pyc
 .venv/*
 **/.venv/
