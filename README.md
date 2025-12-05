@@ -166,7 +166,7 @@ Developers can customize this freely.
 
 Use our UI builder:
 
-👉 **[https://www.zijus.com/zijus-chat-ui?utm_source=github](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
+👉 **[https://www.zijus.com/zijus-chat-ui](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
 
 This tool lets you configure:
 
