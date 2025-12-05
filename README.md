@@ -180,7 +180,10 @@ This tool lets you configure:
 Then it gives you a snippet such as:
 
 ```html
-<script async src="https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js" zijus-config='...'></script>```
+<script async src="https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js" zijus-config='...'>
+    
+</script>
+```
 
 Drop this into any HTML page — instant chat UI.
 
