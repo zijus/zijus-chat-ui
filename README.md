@@ -177,7 +177,6 @@ This tool lets you configure:
 
 ![Zijus Chat UI Screenshot](./chatui-screenshot.png)
 
-
 Then it gives you a snippet such as:
 
 ```html
