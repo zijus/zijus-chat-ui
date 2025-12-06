@@ -17,6 +17,10 @@ Works seamlessly with:
 
 …and any other agentic framework.
 
+👉 Watch the Full Tutorial on **YouTube**
+[![Zijus Chat UI Tutorial](https://img.youtube.com/vi/DvL6vTIra_I/maxresdefault.jpg)](https://youtu.be/DvL6vTIra_I)
+
+
 ---
 
 # 🌟 Why We Built This
