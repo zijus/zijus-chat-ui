@@ -5,6 +5,8 @@
 **Zijus Chat UI** is a free, customizable, enterprise-grade chat client created for the **Zijus Agentic SaaS Platform** and now released for developers building AI agents across any framework.
 Instead of building chat UIs from scratch, you can plug in our WebSocket-based client and focus entirely on your agent logic.
 
+![demo gif](demo.gif)
+
 Works seamlessly with:
 
 * **LangChain**
