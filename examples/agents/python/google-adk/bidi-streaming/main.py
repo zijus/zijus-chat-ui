@@ -1,13 +1,12 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from google.adk.runners import Runner
 from google.adk.agents.run_config import RunConfig, StreamingMode
-from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.sessions import InMemorySessionService
+from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.genai import types
 from my_agent.agent import root_agent
 
@@ -17,11 +16,15 @@ import asyncio
 import uuid
 import logging
 import base64
-from utils import generate_jwt, validate_jwt, save_feedback, send_email, extract_text_from_attachment
+import time
 from io import BytesIO
 from datetime import datetime, timezone
+from typing import Optional
 
-logging.basicConfig(level=logging.WARNING)
+from utils import generate_jwt, validate_jwt, save_feedback, extract_text_from_attachment
+from zijus_tools import set_websocket_sender
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
@@ -29,367 +32,270 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Static & Templates
-#app.mount("/static", StaticFiles(directory="static"), name="static")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 templates = Jinja2Templates(directory="templates")
 
-APP_NAME=os.getenv("APP_NAME", "ZijusExampleApp")
+APP_NAME = os.getenv("APP_NAME", "ZijusBidiExample")
 ZIJUS_JAVASCRIPT = "https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js"
-ZIJUS_CONFIG_ENCODED = os.getenv("ZIJUS_CONFIG_ENCODED", "")
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-	return templates.TemplateResponse("index.html", {
-		"request": request, 
-		"agent_name": APP_NAME, 
-		"zijus_config": ZIJUS_CONFIG_ENCODED, 
-		"zijus_javascript": ZIJUS_JAVASCRIPT
-	})
-
+    return templates.TemplateResponse("index.html", {
+        "request": request, 
+        "agent_name": APP_NAME, 
+        "zijus_config": os.getenv("ZIJUS_CONFIG_ENCODED", ""), 
+        "zijus_javascript": ZIJUS_JAVASCRIPT
+    })
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # 1. Extract Query Params
     token = websocket.query_params.get("token", "")
-    sender_role = websocket.query_params.get("role", "user")
     session_id = websocket.query_params.get("session_id", "")
-    medium = websocket.query_params.get("medium", 'text') or 'text'
-    # Parse custom data
-    custom_data_str = websocket.query_params.get("custom_data")
-    try:
-        custom_data = json.loads(custom_data_str) if custom_data_str else {}
-    except json.JSONDecodeError:
-        custom_data = {}
-
-    language_id = websocket.query_params.get("language", 'EN_US')
-
-    # Modify the logic to handle JWT validation and generation
-    user_id = None
-    payload = None
-    new_token = None
-
-    if token:
-        payload = await validate_jwt(token)
-
-    if payload:
-        user_id = payload.get("user_id") #modify the generation logic to include user_id
-        if not session_id:
-            session_id = payload.get("session_id")
     
-    if not session_id:
-        current_date = datetime.now().strftime('%Y%m%d')
-        session_id = f"{current_date}-{uuid.uuid4()}"
+    payload = await validate_jwt(token) if token else None
+    user_id = payload.get("user_id", "anon") if payload else "anon"
+    session_id = session_id or (payload.get("session_id") if payload else f"sess-{uuid.uuid4()}")
     
-    if not payload or not payload.get("session_id"):
-        new_token = await generate_jwt(session_id)
-        # Update payload if we generated a new token
-        payload = await validate_jwt(new_token)
-
+    new_token = await generate_jwt(session_id) if not payload else token
     await websocket.accept()
-    token = new_token if new_token else token
-    await websocket.send_json({"type": "session", "token": token})
-    # End of JWT handling
 
-    if not user_id:
-        user_id = "anon" # Default user_id if not provided in JWT
+    async def sender(msg: dict):
+        await websocket.send_json(msg)
+    set_websocket_sender(sender)
 
+    await websocket.send_json({"type": "session", "token": new_token})
 
-    # Using InMemory for ADK specific state, while using your DB for chat history/logging
+    # Initialize ADK
     session_service = InMemorySessionService() 
-    runner = Runner(
-        app_name=APP_NAME,
-        agent=root_agent, # type: ignore
-        session_service=session_service
-    )
+    runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
 
-    # Initialize ADK session
     adk_session = await session_service.get_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
     if not adk_session:
-        adk_session = await session_service.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
-    # Determine Modality (Native Audio vs Text)
-    model_name = getattr(root_agent, 'model', 'gemini-2.0-flash-exp') # Fallback if model not set
+        await session_service.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
 
-    is_native_audio = "native-audio" in model_name.lower()
-    response_modalities = ["AUDIO"] if is_native_audio else ["TEXT"]
-
-    voice_config = types.VoiceConfig(
-        prebuilt_voice_config=types.PrebuiltVoiceConfigDict(
-            voice_name="Kore" #change as needed
-        ) # type: ignore
-    )
-    speech_config = types.SpeechConfig(voice_config=voice_config)
+    # --- BIDI / REALTIME CONFIGURATION ---
     run_config = RunConfig(
         streaming_mode=StreamingMode.BIDI,
-        response_modalities=response_modalities,
+        response_modalities=[types.Modality.AUDIO], # Force native audio responses
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         session_resumption=types.SessionResumptionConfig(),
-        speech_config=speech_config
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfigDict(voice_name="Kore") # type: ignore
+            )
+        )
     )
 
     live_request_queue = LiveRequestQueue()
 
+    # --- 3-TIER STATE MACHINE (NORMAL -> PAUSED -> MUTED) ---
+    session_state = {
+        "audio_state": "NORMAL", 
+        "pause_buffer": [],
+        "playing_until": 0.0,
+        "is_generating": False
+    }
+
+    async def route_bot_message(payload: dict, duration_s: float = 0.0):
+        """Routes audio/text based on the 3-Tier State Machine to prevent audio overlap."""
+        state = session_state["audio_state"]
+        
+        if state == "MUTED":
+            return  # Drop completely (Barge-in successful)
+            
+        if duration_s > 0:
+            loop_now = asyncio.get_running_loop().time()
+            session_state["playing_until"] = max(loop_now, session_state["playing_until"]) + duration_s
+            
+        if state == "PAUSED":
+            session_state["pause_buffer"].append(payload) # Soft pause (Hold in memory)
+        else:
+            try: await websocket.send_json(payload)
+            except Exception: pass
+
+    async def hard_interrupt(reason: str):
+        """Immediately stops all bot audio output."""
+        logger.info(f"Barge-in triggered: {reason}")
+        session_state["audio_state"] = "MUTED"
+        session_state["pause_buffer"].clear()
+        session_state["playing_until"] = 0.0
+        try: await websocket.send_json({"source": "assistant", "type": "InterruptMessage", "ts": datetime.now(timezone.utc).isoformat()})
+        except Exception: pass
+
+    # --- TASK 1: UPSTREAM (Client -> Agent) ---
     async def upstream_task():
-        """Handles messages FROM User (WebSocket) -> Queue/Process"""
         try:
             while True:
                 data = await websocket.receive_text()
-                ts_incoming_message = datetime.now(timezone.utc).isoformat()
+                try: data_json = json.loads(data)
+                except Exception: continue
 
-                try:
-                    data_json = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-
-                m_id = data_json.get('m_id', str(uuid.uuid4()))
                 msg_type = data_json.get('type')
 
-                if msg_type == 'session':
-                    continue
-                
-                if msg_type == 'feedback':
-                    await save_feedback() # Placeholder 
-                    continue
-
-                if msg_type == 'send_email':
-                    try:
-                        email_body = base64.b64decode(data_json.get("email_body")).decode("utf-8")
-                        await send_email() # Placeholder
-                    except Exception as e:
-                        logger.error(f"Email error: {e}")
-                    continue
-
+                # 1. Handle Audio Inputs
                 if msg_type == 'AudioMessage':
-                    try:
-                        # 1. Decode Base64
-                        audio_b64 = data_json.get('data', '')
-                        if audio_b64:
-                            audio_bytes = base64.b64decode(audio_b64)
-                            
-                            # 2. Get Mime Type (default to 16k if missing)
-                            mime_type = data_json.get('mimeType', 'audio/pcm;rate=16000')
-                            
-                            # 3. Create Blob
-                            audio_blob = types.Blob(
-                                mime_type=mime_type, 
-                                data=audio_bytes
-                            )
-                            
-                            
-                            # 4. Send to ADK
-                            live_request_queue.send_realtime(audio_blob)
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing AudioMessage: {e}")
-                    
-                    continue
-                
-                content_text = data_json.get('content', '')
-
-                # 2. Prepare ADK Request parts
-                parts = []
-                
-                # Handle Attachments
-                if 'attachment' in data_json:
-                    att = data_json['attachment']
-                    try:
-                        att_data = base64.b64decode(att['data'])
-                        mime = att.get('type', 'application/octet-stream')
+                    audio_b64 = data_json.get('data', '')
+                    if audio_b64:
+                        audio_bytes = base64.b64decode(audio_b64)
+                        is_partial = data_json.get('partial_audio', True)
                         
-                        # If Image -> Send as Blob
-                        if mime.startswith('image/'):
-                            image_blob = types.Blob(mime_type=mime, data=att_data)
-                            live_request_queue.send_realtime(image_blob)
-                            content_text += " [Image Attached]"
-                        else:
-                            # If Doc -> Extract text
-                            att_file = BytesIO(att_data)
-                            extracted_text = await extract_text_from_attachment() # Placeholder function
-                            content_text += f"\n[Attachment Content]: {extracted_text}"
-                    except Exception as e:
-                        logger.error(f"Attachment error: {e}")
+                        # A. Full Audio Uploads (e.g., from a REST client or file upload)
+                        if not is_partial:
+                            await hard_interrupt(reason="Received full audio upload")
+                            mime = data_json.get('mimeType', 'audio/pcm;rate=16000')
+                            live_request_queue.send_content(types.Content(
+                                parts=[types.Part(inline_data=types.Blob(mime_type=mime, data=audio_bytes))], role="user"
+                            ))
+                            continue
 
-                # 3. Send Text to Queue
-                if content_text:
-                    content_part = types.Part(text=content_text)
-                    content = types.Content(parts=[content_part], role="user")
-                    live_request_queue.send_content(content)
+                        # B. Realtime Streaming Audio (WebRTC / Browser Mic)
+                        # Push raw chunks directly to Google's Live API
+                        live_request_queue.send_realtime(types.Blob(
+                            mime_type=data_json.get('mimeType', 'audio/pcm;rate=16000'), 
+                            data=audio_bytes
+                        ))
+                        # Note: In an enterprise app, local VAD (like Silero) would go here 
+                        # to trigger Soft Pauses before Google's cloud VAD reacts.
+
+                # 2. Handle Text Inputs
+                elif msg_type == 'TextMessage':
+                    content_text = data_json.get('content', '')
+                    if content_text:
+                        await hard_interrupt(reason="User typed text")
+                        live_request_queue.send_content(types.Content(
+                            parts=[types.Part(text=content_text)], role="user"
+                        ))
+
+                # 3. Handle Widget/Form Interactions
+                elif msg_type == 'WidgetEvent':
+                    payload = data_json.get("widgetEvent", {}).get("payload", {})
+                    text_content = "\n".join(f"{k}: {v}" for k, v in payload.items()).strip()
+                    if text_content:
+                        await hard_interrupt(reason="User interacted with UI Widget")
+                        live_request_queue.send_content(types.Content(
+                            parts=[types.Part(text=f"[User Submitted Form/Widget]:\n{text_content}")], role="user"
+                        ))
 
         except WebSocketDisconnect:
-            logger.info("Upstream: Client disconnected")
-        except Exception as e:
-            logger.error(f"Error in upstream_task: {e}")
-            # Keep alive unless critical
+            logger.info(f"Client disconnected: {session_id}")
+            raise 
 
+    # --- TASK 2: DOWNSTREAM (Agent -> Client) ---
     async def downstream_task():
-            """Handles events FROM Agent (ADK) -> User (WebSocket)"""
-            try:
-                current_input_response_id = str(uuid.uuid4())
-                current_output_response_id = str(uuid.uuid4())
-                accumulated_input_text = ""
-                accumulated_output_text = ""
-                # Helper to check if a part is an internal thought
-                def is_thought(part):
-                    return getattr(part, 'thought', False)
-
-                async for event in runner.run_live(
-                    user_id=user_id,
-                    session_id=session_id,
-                    live_request_queue=live_request_queue,
-                    run_config=run_config
-                ):
-                    # =================================================================
-                    # SCENARIO A: Native Audio Model
-                    # =================================================================
-                    if event.input_transcription:
-                        transcription = getattr(event.input_transcription, 'text', None)
-                        if transcription:
-                            if not accumulated_input_text:
-                                transcription = "🎤 " + transcription
-                            accumulated_input_text += transcription
-                            chunk_msg = {
-                                "source": "user",
-                                "content": transcription,
-                                "m_id": current_input_response_id,
-                                "is_transcription": True,
-                                "type": "TextMessage",
-                                "ts": datetime.now(timezone.utc).isoformat()
-                            }
-                            await websocket.send_json(chunk_msg)
-
-                    if is_native_audio:
-                        # 1. Handle Text Transcription (Overlay)
-                        if hasattr(event, 'output_transcription') and event.output_transcription:
-                            # Depending on ADK version, this might be event.output_transcription.text or similar
-                            # Adjust based on the actual object structure, assuming .text based on your JSON
-                            transcription = getattr(event.output_transcription, 'text', None)
-                            if transcription:
-                                accumulated_output_text += transcription
-                                chunk_msg = {
-                                    "source": "assistant",
-                                    "name": event.author,
-                                    "content": transcription,
-                                    "m_id": current_output_response_id,
-                                    "is_transcription": True,
-                                    "type": "TextMessage",
-                                    "ts": datetime.now(timezone.utc).isoformat()
-                                }
-                                await websocket.send_json(chunk_msg)
-
-                        # 2. Handle Audio Binary Data
-                        if hasattr(event, 'content') and event.content:
-                            for part in event.content.parts: #type: ignore
-                                if is_thought(part): continue # Skip thoughts
-
-                                # Check for inline data (audio bytes)
-                                if hasattr(part, 'inline_data') and part.inline_data:
-                                    audio_bytes = part.inline_data.data # This usually comes as bytes
-                                    mime_type = part.inline_data.mime_type
-                                    
-                                    # Send audio chunk to client
-                                    b64_audio = base64.b64encode(audio_bytes).decode('utf-8') # type: ignore
-                                    audio_msg = {
-                                        "source": "assistant",
-                                        "name": event.author,
-                                        "data": b64_audio,
-                                        "mime_type": mime_type,
-                                        "m_id": current_output_response_id,
-                                        "type": "AudioMessage",
-                                        "ts": datetime.now(timezone.utc).isoformat()
-                                    }
-                                    await websocket.send_json(audio_msg)
-
-                        # 3. Handle End of Turn (Completion or Interruption)
-                        is_interrupted = getattr(event, 'interrupted', False)
-                        
-                        if event.turn_complete or is_interrupted:
-                            if is_interrupted:
-                                interruption_msg = {
-                                    "source": "assistant",
-                                    "m_id": current_output_response_id,
-                                    "type": "InterruptMessage", 
-                                    "ts": datetime.now(timezone.utc).isoformat()
-                                }
-                                await websocket.send_json(interruption_msg)
-
-                            
-                            # Reset for next turn
-                            current_input_response_id = str(uuid.uuid4())
-                            accumulated_input_text = ""
-                            current_output_response_id = str(uuid.uuid4())
-                            accumulated_output_text = ""
-
-                    # =================================================================
-                    # SCENARIO B: Text/Multimodal Model (Standard)
-                    # =================================================================
-                    else:
-                        #print("Processing Standard Text Event:", event)
-                        is_partial = getattr(event, 'partial', False)
-                        
-                        # 1. Handle Content
-                        if hasattr(event, 'content') and event.content:
-                            text_chunk_for_this_event = ""
-                            
-                            for part in event.content.parts: #type: ignore
-                                if is_thought(part): continue # Skip thoughts
-                                if part.text:
-                                    text_chunk_for_this_event += part.text
-
-                            if text_chunk_for_this_event:
-                                # If Partial: Send to client AND accumulate
-                                if is_partial:
-                                    accumulated_output_text += text_chunk_for_this_event
-                                    chunk_msg = {
-                                        "source": "assistant",
-                                        "name": event.author,
-                                        "content": text_chunk_for_this_event,
-                                        "m_id": current_output_response_id,
-                                        "type": "TextMessage",
-                                        "ts": datetime.now(timezone.utc).isoformat()
-                                    }
-                                    await websocket.send_json(chunk_msg)
-                                
-                                pass
-
-                        # 2. Handle End of Turn (turnComplete)
-                        if event.turn_complete:
-                            # Reset
-                            current_output_response_id = str(uuid.uuid4())
-                            current_input_response_id = str(uuid.uuid4())
-                            accumulated_output_text = ""
-                            accumulated_input_text = ""
-
-
-            except Exception as e:
-                logger.error(f"Error in downstream_task: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                pass
-
-    try:
-        # Run Upstream, Downstream, and Redis Listener concurrently
-        await asyncio.gather(
-            upstream_task(),
-            downstream_task()
-        )
-    except Exception as e:
-        logger.error(f"Session loop terminated: {e}")
-    finally:
-        # Cleanup
-        live_request_queue.close()
         try:
-            await websocket.close()
-        except:
-            pass
+            current_input_id = str(uuid.uuid4())
+            current_output_id = str(uuid.uuid4())
+            acc_input = ""
+            acc_output = ""
+            logged_in_tx = False
+            
+            async for event in runner.run_live(user_id=user_id, session_id=session_id, live_request_queue=live_request_queue, run_config=run_config):
+                if event is None: continue
+                
+                # 1. Cloud Interruption
+                if getattr(event, 'interrupted', False):
+                    if session_state["audio_state"] != "MUTED":
+                        await hard_interrupt(reason="Cloud VAD Interruption")
+
+                # 2. Input Transcription
+                if getattr(event, 'input_transcription', None):
+                    tx = event.input_transcription
+                    # Safely extract text for Pylance
+                    in_text = tx.text if tx else None 
+                    
+                    if in_text:
+                        if not logged_in_tx:
+                            logged_in_tx = True
+                            try: await websocket.send_json({
+                                "source": "user", "type": "TextMessage", "is_transcription": True,
+                                "content": "🎤 ...", "m_id": current_input_id, "ts": datetime.now(timezone.utc).isoformat()
+                            })
+                            except Exception: pass
+                            
+                        raw_text = in_text.strip()
+                        if len(raw_text) > len(acc_input):
+                            acc_input = raw_text
+
+                # 3. Output Processing
+                # A. Output Transcription (Text)
+                if hasattr(event, 'output_transcription') and event.output_transcription:
+                    tx = event.output_transcription
+                    out_text = tx.text # Grab the property
+                    
+                    # If out_text is a string and not empty
+                    if out_text and not getattr(tx, "finished", False):
+                        acc_output += out_text
+                        await route_bot_message({
+                            "source": "assistant", "type": "TextMessage", "is_transcription": True,
+                            "content": out_text, "m_id": current_output_id, "ts": datetime.now(timezone.utc).isoformat()
+                        })
+
+                # B. Output Audio Binary
+                if hasattr(event, 'content') and event.content:
+                    session_state["is_generating"] = True
+                    
+                    # Safely default to an empty list if parts is None
+                    parts = event.content.parts or []
+                    
+                    for part in parts:
+                        if hasattr(part, 'thought') and part.thought: continue
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            audio_chunk = part.inline_data.data
+                            if audio_chunk: # Ensure it has data
+                                await route_bot_message({
+                                    "source": "assistant", "type": "AudioMessage",
+                                    "data": base64.b64encode(audio_chunk).decode('utf-8'),
+                                    "mime_type": part.inline_data.mime_type, "m_id": current_output_id,
+                                    "ts": datetime.now(timezone.utc).isoformat()
+                                }, duration_s=len(audio_chunk) / (24000 * 2))
+
+                # 4. Turn Complete / Finalize Output
+                if getattr(event, 'turn_complete', False):
+                    session_state["is_generating"] = False
+                        
+                    # Flush User Text Final to UI
+                    if acc_input.strip():
+                        try: await websocket.send_json({
+                            "source": "user", "type": "TextMessage", "is_transcription": True,
+                            "content": acc_input.strip(), "m_id": current_input_id, "ts": datetime.now(timezone.utc).isoformat()
+                        })
+                        except Exception: pass
+                    
+                    # Signal bot completion
+                    try: await websocket.send_json({"source": "assistant", "type": "FinalMessage", "m_id": current_output_id, "ts": datetime.now(timezone.utc).isoformat()})
+                    except Exception: pass
+                    
+                    # Reset Session States
+                    acc_input = ""
+                    acc_output = ""
+                    logged_in_tx = False
+                    current_input_id = str(uuid.uuid4())
+                    current_output_id = str(uuid.uuid4())
+                    
+                    session_state["audio_state"] = "NORMAL"
+                    session_state["pause_buffer"].clear()
+
+        except Exception as e:
+            if "1011" in str(e) or "Internal error" in str(e):
+                logger.info("Google Live API sent a known 1011 disconnect. Connection closed safely.")
+            else:
+                logger.error(f"Downstream error: {e}")
+            raise
+
+    # --- EXECUTE CONCURRENT TASKS ---
+    try:
+        done, pending = await asyncio.wait(
+            [asyncio.create_task(upstream_task()), asyncio.create_task(downstream_task())],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending: task.cancel()
+        for task in done:
+            try: task.result()
+            except Exception: pass
+    finally:
+        live_request_queue.close()
+
 
 if __name__ == "__main__":
 	import uvicorn

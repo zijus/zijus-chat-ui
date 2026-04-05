@@ -16,9 +16,11 @@ import asyncio
 import uuid
 import logging
 import base64
-from utils import generate_jwt, validate_jwt, save_feedback, send_email, extract_text_from_attachment
+from utils import generate_jwt, validate_jwt, save_feedback, extract_text_from_attachment
 from io import BytesIO
 from datetime import datetime, timezone
+from zijus_tools import set_websocket_sender
+from typing import Optional
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -41,213 +43,163 @@ app.add_middleware(
 #app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-APP_NAME=os.getenv("APP_NAME", "ZijusExampleApp")
+APP_NAME = os.getenv("APP_NAME", "ZijusExampleApp")
 ZIJUS_JAVASCRIPT = "https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js"
 ZIJUS_CONFIG_ENCODED = os.getenv("ZIJUS_CONFIG_ENCODED", "")
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-	return templates.TemplateResponse("index.html", {
-		"request": request, 
-		"agent_name": APP_NAME, 
-		"zijus_config": ZIJUS_CONFIG_ENCODED, 
-		"zijus_javascript": ZIJUS_JAVASCRIPT
-	})
-
+    return templates.TemplateResponse("index.html", {
+        "request": request, 
+        "agent_name": APP_NAME, 
+        "zijus_config": ZIJUS_CONFIG_ENCODED, 
+        "zijus_javascript": ZIJUS_JAVASCRIPT
+    })
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     # 1. Extract Query Params
     token = websocket.query_params.get("token", "")
-    sender_role = websocket.query_params.get("role", "user")
     session_id = websocket.query_params.get("session_id", "")
-    medium = websocket.query_params.get("medium", 'text') or 'text'
-    # Parse custom data
-    custom_data_str = websocket.query_params.get("custom_data")
-    try:
-        custom_data = json.loads(custom_data_str) if custom_data_str else {}
-    except json.JSONDecodeError:
-        custom_data = {}
-
-    language_id = websocket.query_params.get("language", 'EN_US')
-
-    # Modify the logic to handle JWT validation and generation
-    user_id = None
-    payload = None
-    new_token = None
-
-    if token:
-        payload = await validate_jwt(token)
-
-    if payload:
-        user_id = payload.get("user_id") #modify the generation logic to include user_id
-        if not session_id:
-            session_id = payload.get("session_id")
     
-    if not session_id:
-        current_date = datetime.now().strftime('%Y%m%d')
-        session_id = f"{current_date}-{uuid.uuid4()}"
+    # 2. Handle JWT validation and generation
+    payload = await validate_jwt(token) if token else None
+    user_id = payload.get("user_id", "anon") if payload else "anon"
+    session_id = session_id or (payload.get("session_id") if payload else f"sess-{uuid.uuid4()}")
     
-    if not payload or not payload.get("session_id"):
-        new_token = await generate_jwt(session_id)
-        # Update payload if we generated a new token
-        payload = await validate_jwt(new_token)
+    new_token = await generate_jwt(session_id) if not payload else token
 
     await websocket.accept()
-    token = new_token if new_token else token
-    await websocket.send_json({"type": "session", "token": token})
-    # End of JWT handling
 
-    if not user_id:
-        user_id = "anon" # Default user_id if not provided in JWT
+    # 3. Inject WebSocket Sender for Zijus Tools (Framework Agnostic UI Tools)
+    async def sender(msg: dict):
+        await websocket.send_json(msg)
+    set_websocket_sender(sender)
 
+    await websocket.send_json({"type": "session", "token": new_token})
 
-    # Using InMemory for ADK specific state, while using your DB for chat history/logging
+    # 4. Initialize Agent Framework
     session_service = InMemorySessionService() 
-    runner = Runner(
-        app_name=APP_NAME,
-        agent=root_agent, # type: ignore
-        session_service=session_service
-    )
+    runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
 
-    # Initialize ADK session
     adk_session = await session_service.get_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
     if not adk_session:
-        adk_session = await session_service.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
-    # Determine Modality (Native Audio vs Text)
-    model_name = getattr(root_agent, 'model', 'gemini-2.0-flash-exp') # Fallback if model not set
+        await session_service.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
+    # ------------------------------------------
 
-    is_native_audio = "native-audio" in model_name.lower()
-    response_modalities = ["AUDIO"] if is_native_audio else ["TEXT"]
+    # State Tracking for Interruption
+    current_ai_task: Optional[asyncio.Task] = None
 
-    run_config = RunConfig(
-                streaming_mode=StreamingMode.SSE,  # <--- This enables text streaming for standard models
-                response_modalities=response_modalities,      # Standard models only support TEXT here
-    )
 
+    async def cancel_running_task(reason: str):
+        """Cancels the currently generating AI task and notifies the frontend."""
+        nonlocal current_ai_task
+        if current_ai_task and not current_ai_task.done():
+            logger.info(f"Interrupting AI generation: {reason}")
+            current_ai_task.cancel()
+            try:
+                await websocket.send_json({
+                    "source": "assistant",
+                    "type": "InterruptMessage",
+                    "ts": datetime.now(timezone.utc).isoformat()
+                })
+            except Exception: pass
+
+    async def process_agent_request(parts: list, m_id: str):
+        """Background task to run the agent and stream results back."""
+        response_m_id = str(uuid.uuid4())
+        run_config = RunConfig(streaming_mode=StreamingMode.SSE, response_modalities=["TEXT"])
+        
+        try:
+            async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=types.Content(role="user", parts=parts), run_config=run_config): # type: ignore
+                
+                event_parts = getattr(getattr(event, "content", None), "parts", []) or []
+                
+                # Stream Thoughts (if agent supports reasoning models)
+                thoughts = "\n".join(p.text for p in event_parts if getattr(p, "thought", False))
+                if thoughts:
+                    await websocket.send_json({
+                        "source": "assistant", "type": "ThoughtMessage", 
+                        "content": thoughts, "m_id": response_m_id, "ts": datetime.now(timezone.utc).isoformat()
+                    })
+
+                # Stream Standard Text Chunks
+                if getattr(event, "content", None):
+                    text_chunk = "".join(p.text for p in event_parts if p.text and not getattr(p, "thought", False))
+                    if text_chunk and getattr(event, 'partial', False):
+                        await websocket.send_json({
+                            "source": "assistant", "type": "TextMessage",
+                            "content": text_chunk, "m_id": response_m_id, "ts": datetime.now(timezone.utc).isoformat()
+                        })
+
+            # Signal the frontend that generation is complete
+            await websocket.send_json({
+                "source": "assistant", "type": "FinalMessage", 
+                "m_id": response_m_id, "ts": datetime.now(timezone.utc).isoformat()
+            })
+
+        except asyncio.CancelledError:
+            logger.info("Agent generation was successfully cancelled by the user.")
+        except Exception as e:
+            logger.error(f"Agent execution error: {e}")
+
+    # 5. Main WebSocket Receive Loop
     try:
         while True:
-            # Wait for User Message
             data = await websocket.receive_text()
-            ts_incoming_message = datetime.now(timezone.utc).isoformat()
-            
             try:
                 data_json = json.loads(data)
-            except: continue
+            except json.JSONDecodeError: continue
+
             m_id = data_json.get('m_id', str(uuid.uuid4()))
             msg_type = data_json.get('type')
-            
-            # Build ADK Content Object
             parts = []
-            user_log_content = ""
 
+            # Non-LLM Events
             if msg_type == 'session':
                 continue
             
             if msg_type == 'feedback':
-                await save_feedback() # Placeholder 
+                await save_feedback() # Hook to your utils
                 continue
 
-            if msg_type == 'send_email':
-                try:
-                    email_body = base64.b64decode(data_json.get("email_body")).decode("utf-8")
-                    await send_email() # Placeholder
-                except Exception as e:
-                    logger.error(f"Email error: {e}")
-                continue
 
+            # LLM Triggering Events
             if msg_type == 'AudioMessage':
-                try:
-                    # 1. Decode Base64
-                    audio_b64 = data_json.get('data', '')
-                    if audio_b64:
-                        audio_bytes = base64.b64decode(audio_b64)
-                        
-                        # 2. Get Mime Type (default to 16k if missing)
-                        mime_type = data_json.get('mimeType', 'audio/pcm;rate=16000')
-                        
-                        logger.info(f"Audio message received: {len(audio_bytes)} bytes, mime: {mime_type}")
-                        
-                except Exception as e:
-                    logger.error(f"Error processing AudioMessage: {e}")
-                
+                await cancel_running_task(reason="User started speaking")
+                # Handle audio processing/STT here in production
                 continue
+
+            if msg_type == 'WidgetEvent':
+                await cancel_running_task(reason="User interacted with a widget")
+                payload = data_json.get("widgetEvent", {}).get("payload", {})
+                text_content = "\n".join(f"{k}: {v}" for k, v in payload.items()).strip()
+                if text_content:
+                    parts.append(types.Part(text=f"[User Submitted Form/Widget]:\n{text_content}"))
 
             if msg_type == 'TextMessage':
-                # Handle Text/Attachments
-                content_text = data_json.get('content', '')
-                user_log_content = content_text
+                await cancel_running_task(reason="User typed a message")
                 
-                # If attachment is image:
+                text_content = data_json.get('content', '')
+                if text_content.strip():
+                    parts.append(types.Part(text=text_content))
+
                 if 'attachment' in data_json:
                     att = data_json['attachment']
-                    if att['type'].startswith('image/'):
-                        parts.append(types.Part(
-                            inline_data=types.Blob(
-                                mime_type=att['type'], 
-                                data=base64.b64decode(att['data'])
-                            )
-                        ))
-                        user_log_content += " [Image]"
+                    att_data = base64.b64decode(att['data'])
+                    mime = att.get('type', 'application/octet-stream')
+
+                    if mime.startswith('image/'):
+                        parts.append(types.Part(inline_data=types.Blob(mime_type=mime, data=att_data)))
                     else:
-                        att_data = base64.b64decode(att['data'])
-                        mime = att.get('type', 'application/octet-stream')
-                        # If Doc -> Extract text
-                        att_file = BytesIO(att_data)
-                        extracted_text = await extract_text_from_attachment() # Placeholder function
-                        content_text += f"\n[Attachment Content]: {extracted_text}"
+                        extracted_text = await extract_text_from_attachment(BytesIO(att_data), mime)
+                        parts.append(types.Part(text=f"\n[Attachment Content]: {extracted_text}"))
 
-                
-                if content_text:
-                    parts.append(types.Part(text=content_text))
-
-            if not parts: continue
-
-            # Execute Agent (Synchronous runner.run wrapped in thread)
-            new_message = types.Content(role="user", parts=parts)
-            response_m_id = str(uuid.uuid4())
-            accumulated_response = ""
-        
-            try:
-                # Iterate the generator returned by run_standard_adk
-                async for event in runner.run_async(
-                    user_id=user_id,
-                    session_id=session_id,
-                    new_message=new_message,
-                    run_config=run_config
-                ):
-                    is_partial = getattr(event, 'partial', False)
-                    
-                    text_chunk = ""
-                    
-                    # Extract Text
-                    if hasattr(event, 'content') and event.content:
-                        for part in event.content.parts: #type: ignore
-                            if part.text: 
-                                text_chunk += part.text
-                    
-                    # Stream Chunk
-                    if text_chunk:
-                        if is_partial:
-                            accumulated_response += text_chunk
-                            await websocket.send_json({
-                                "source": "assistant",
-                                "name": event.author,
-                                "content": text_chunk,
-                                "m_id": response_m_id,
-                                "type": "TextMessage",
-                                "ts": datetime.now(timezone.utc).isoformat()
-                            })
-            
-            except ValueError as ve:
-                if "Session not found" in str(ve):
-                    logger.warning("Session ended during stream")
-                else: logger.error(f"Runner error: {ve}")
-            except Exception as e:
-                logger.error(f"Standard execution error: {e}")
-
+            if parts:
+                current_ai_task = asyncio.create_task(process_agent_request(parts, m_id))
 
     except WebSocketDisconnect:
-        pass
+        logger.info(f"Session {session_id} disconnected.")
     finally:
         pass
 
