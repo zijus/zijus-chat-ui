@@ -3,8 +3,10 @@ import json
 import base64
 import logging
 import uuid
+import asyncio
 from io import BytesIO
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,8 +17,9 @@ from fastapi.templating import Jinja2Templates
 from agno.media import Image as AgnoImage
 from my_agent.agent import root_agent
 
-# --- Utilities ---
+# --- Utilities & Tools ---
 from utils import generate_jwt, validate_jwt, extract_text_from_attachment, save_feedback, send_email
+from zijus_tools import set_websocket_sender
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -28,16 +31,12 @@ app = FastAPI()
 
 # CORS
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
 templates = Jinja2Templates(directory="templates")
 
-APP_NAME = os.getenv("APP_NAME", "ZijusExampleApp")
+APP_NAME = os.getenv("APP_NAME", "ZijusAgnoApp")
 ZIJUS_JAVASCRIPT = "https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js"
 ZIJUS_CONFIG_ENCODED = os.getenv("ZIJUS_CONFIG_ENCODED", "")
 
@@ -52,170 +51,143 @@ async def read_root(request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # 1. Extract Query Params
     token = websocket.query_params.get("token", "")
     session_id = websocket.query_params.get("session_id", "")
     
-    # 2. JWT & Session Handling
-    user_id = None
-    payload = None
-    new_token = None
-
-    if token:
-        payload = await validate_jwt(token)
-
-    if payload:
-        user_id = payload.get("user_id")
-        if not session_id:
-            session_id = payload.get("session_id")
+    payload = await validate_jwt(token) if token else None
+    user_id = payload.get("user_id", "anon") if payload else "anon"
+    session_id = session_id or (payload.get("session_id") if payload else f"sess-{uuid.uuid4()}")
     
-    if not session_id:
-        current_date = datetime.now().strftime('%Y%m%d')
-        session_id = f"{current_date}-{uuid.uuid4()}"
-    
-    if not payload or not payload.get("session_id"):
-        new_token = await generate_jwt(session_id)
-        # Update payload if we generated a new token (simulated logic)
-        # payload = await validate_jwt(new_token)
+    new_token = await generate_jwt(session_id) if not payload else token
 
     await websocket.accept()
-    token = new_token if new_token else token
-    await websocket.send_json({"type": "session", "token": token})
+    await websocket.send_json({"type": "session", "token": new_token})
 
-    if not user_id:
-        user_id = "anon"
+    # 1. Inject Zijus Tools WebSockets Sender
+    async def sender(msg: dict):
+        await websocket.send_json(msg)
+    set_websocket_sender(sender)
 
-    # 3. Initialize Agno Agent for this session
-    # Agno manages history persistence via the storage defined in agent.py
-    agent = root_agent
+    # 2. State tracking for Barge-in Interruption
+    current_ai_task: Optional[asyncio.Task] = None
 
+    async def cancel_running_task(reason: str):
+        """Cancels the currently generating AI task and notifies the frontend."""
+        nonlocal current_ai_task
+        if current_ai_task and not current_ai_task.done():
+            logger.info(f"Interrupting AI generation: {reason}")
+            current_ai_task.cancel()
+            try:
+                await websocket.send_json({
+                    "source": "assistant",
+                    "type": "InterruptMessage",
+                    "ts": datetime.now(timezone.utc).isoformat()
+                })
+            except Exception: pass
+
+    # 3. Background Agent Execution Task
+    async def process_agent_request(prompt_text: str, images: list, m_id: str):
+        response_m_id = str(uuid.uuid4())
+        
+        try:
+            # Execute Agno Stream
+            run_response = root_agent.arun(
+                prompt_text,
+                images=images if images else None,
+                stream=True,
+                session_id=session_id # Pass session ID for native Agno memory persistence
+            )
+
+            async for chunk in run_response:
+                if chunk.content:
+                    await websocket.send_json({
+                        "source": "assistant",
+                        "content": chunk.content,
+                        "m_id": response_m_id,
+                        "type": "TextMessage", 
+                        "ts": datetime.now(timezone.utc).isoformat()
+                    })
+            
+            # Send FinalMessage on completion
+            await websocket.send_json({
+                "source": "assistant", "type": "FinalMessage", 
+                "m_id": response_m_id, "ts": datetime.now(timezone.utc).isoformat()
+            })
+
+        except asyncio.CancelledError:
+            logger.info("Agno run cancelled by user interruption.")
+        except Exception as e:
+            logger.error(f"Agno execution error: {e}")
+            await websocket.send_json({"source": "assistant", "type": "error", "content": "Error processing request."})
+
+    # 4. Main Event Loop
     try:
         while True:
-            # A. Receive User Message
             data = await websocket.receive_text()
-            
-            try:
-                data_json = json.loads(data)
-            except json.JSONDecodeError:
-                continue
+            try: data_json = json.loads(data)
+            except json.JSONDecodeError: continue
 
-            # Check for non-chat events (e.g. ping/pong or system events)
-            if 'type' not in data_json:
-                continue
-
-            m_id = data_json.get('m_id', str(uuid.uuid4()))
             msg_type = data_json.get('type')
-            response_m_id = str(uuid.uuid4())
+            m_id = data_json.get('m_id', str(uuid.uuid4()))
 
-            # B. Prepare Inputs for Agno
-            prompt_text = data_json.get('content', '')
-            images = []
-
-            if msg_type == 'session':
-                continue
+            # Ignore control & placeholder events
+            if msg_type in ['session', None]: continue
             
             if msg_type == 'feedback':
-                await save_feedback() # Placeholder 
+                await save_feedback()
                 continue
 
             if msg_type == 'send_email':
-                try:
-                    email_body = base64.b64decode(data_json.get("email_body")).decode("utf-8")
-                    await send_email() # Placeholder
-                except Exception as e:
-                    logger.error(f"Email error: {e}")
+                await send_email()
                 continue
 
+            # Handle Audio Barge-in
             if msg_type == 'AudioMessage':
-                try:
-                    # 1. Decode Base64
-                    audio_b64 = data_json.get('data', '')
-                    if audio_b64:
-                        audio_bytes = base64.b64decode(audio_b64)
-                        
-                        # 2. Get Mime Type (default to 16k if missing)
-                        mime_type = data_json.get('mimeType', 'audio/pcm;rate=16000')
-                        
-                        logger.info(f"Audio message received: {len(audio_bytes)} bytes, mime: {mime_type}")
-                        
-                except Exception as e:
-                    logger.error(f"Error processing AudioMessage: {e}")
-                
+                await cancel_running_task(reason="User started speaking")
+                # Voice processing/STT would go here in production
+                continue
+            
+            # Handle UI Widget Events (Form Submissions, Button Clicks)
+            if msg_type == "WidgetEvent":
+                await cancel_running_task(reason="User interacted with a widget")
+                payload = data_json.get("widgetEvent", {}).get("payload", {})
+                text_content = "\n".join(f"{k}: {v}" for k, v in payload.items()).strip()
+                if text_content:
+                    current_ai_task = asyncio.create_task(
+                        process_agent_request(f"[User Submitted Form/Widget]:\n{text_content}", [], m_id)
+                    )
                 continue
 
-
+            # Handle Text Messages & Multimodal Attachments
             if msg_type == 'TextMessage':
-                # Handle Attachments
+                await cancel_running_task(reason="User typed a message")
+                
+                prompt_text = data_json.get('content', '')
+                images = []
+
                 if 'attachment' in data_json:
                     att = data_json['attachment']
                     att_type = att.get('type', '')
                     
                     if att_type.startswith('image/'):
-                        # --- Image Handling ---
-                        # Agno accepts images as base64 strings directly in AgnoImage
                         try:
-                            # Use Agno's Image class
+                            # Parse directly into AgnoImage format
                             img = AgnoImage(
                                 content=base64.b64decode(att['data']),
-                                format=att_type.split('/')[-1] # e.g., 'png' or 'jpeg'
                             )
                             images.append(img)
-                            logger.info("Image attachment processed")
                         except Exception as e:
                             logger.error(f"Image processing error: {e}")
-                            await websocket.send_json({
-                                "source": "assistant",
-                                "content": "Error processing image attachment.",
-                                "type": "error"
-                            })
-                            continue
                     else:
-                        try:
-                            att_data = base64.b64decode(att['data'])
-                            # Placeholder for your extract function
-                            # extracted_text = await extract_text_from_attachment(BytesIO(att_data)) 
-                            extracted_text = "[Document content extracted]" 
-                            prompt_text += f"\n\n[Attachment Content]:\n{extracted_text}"
-                        except Exception as e:
-                            logger.error(f"Doc processing error: {e}")
+                        att_data = base64.b64decode(att['data'])
+                        extracted_text = await extract_text_from_attachment(BytesIO(att_data), att_type) 
+                        prompt_text += f"\n\n[Attachment Content]:\n{extracted_text}"
 
-            # If no content, skip
-            if not prompt_text and not images:
-                continue
-
-            # C. Run Agno Agent Stream
-            try:
-                run_response = agent.arun(
-                    prompt_text,
-                    images=images,
-                    stream=True
-                )
-
-                async for chunk in run_response:
-                    # chunk is a RunResponse object. 
-                    # chunk.content contains the delta text in streaming mode.
-                    if chunk.content:
-                        await websocket.send_json({
-                            "source": "assistant",
-                            "content": chunk.content,
-                            "m_id": response_m_id,
-                            "type": "TextMessage", 
-                            "ts": datetime.now(timezone.utc).isoformat()
-                        })
-                
-
-            except Exception as e:
-                logger.error(f"Agno execution error: {e}")
-                await websocket.send_json({
-                    "source": "assistant", 
-                    "content": f"An error occurred: {str(e)}", 
-                    "type": "error"
-                })
+                if prompt_text or images:
+                    current_ai_task = asyncio.create_task(process_agent_request(prompt_text, images, m_id))
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: {session_id}")
-    finally:
-        pass
 
 if __name__ == "__main__":
     import uvicorn

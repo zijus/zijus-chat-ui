@@ -17,11 +17,9 @@ import uuid
 import logging
 import base64
 import time
-from io import BytesIO
 from datetime import datetime, timezone
-from typing import Optional
 
-from utils import generate_jwt, validate_jwt, save_feedback, extract_text_from_attachment
+from utils import generate_jwt, validate_jwt, save_feedback
 from zijus_tools import set_websocket_sender
 
 logging.basicConfig(level=logging.INFO)
@@ -35,17 +33,20 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 templates = Jinja2Templates(directory="templates")
 
-APP_NAME = os.getenv("APP_NAME", "ZijusBidiExample")
+APP_NAME = os.getenv("APP_NAME", "ZijusGoogleBidiApp")
 ZIJUS_JAVASCRIPT = "https://cdn.jsdelivr.net/gh/zijus/zijus-chat-ui@main/dist/zijus-webclient-v0.1.0.js"
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request, 
-        "agent_name": APP_NAME, 
-        "zijus_config": os.getenv("ZIJUS_CONFIG_ENCODED", ""), 
-        "zijus_javascript": ZIJUS_JAVASCRIPT
-    })
+    return templates.TemplateResponse(
+        request=request, 
+        name="index.html", 
+        context={
+            "agent_name": APP_NAME, 
+            "zijus_config": os.getenv("ZIJUS_CONFIG_ENCODED", ""), 
+            "zijus_javascript": ZIJUS_JAVASCRIPT
+        }
+    )
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -69,7 +70,7 @@ async def websocket_endpoint(websocket: WebSocket):
     session_service = InMemorySessionService() 
     runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
 
-    adk_session = await session_service.get_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
+    adk_session = await session_service.get_session(app_name=APP_NAME, user_id=user_id, session_id=session_id) # type: ignore
     if not adk_session:
         await session_service.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
 
@@ -89,12 +90,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
     live_request_queue = LiveRequestQueue()
 
-    # --- 3-TIER STATE MACHINE (NORMAL -> PAUSED -> MUTED) ---
+    # --- 3-TIER STATE MACHINE & LATENCY TRACKING ---
     session_state = {
         "audio_state": "NORMAL", 
         "pause_buffer": [],
         "playing_until": 0.0,
-        "is_generating": False
+        "is_generating": False,
+        "turn_start_t0": time.perf_counter(),
+        "logged_first_in_tx": False,
+        "logged_first_out_tx": False,
+        "logged_first_audio": False,
     }
 
     async def route_bot_message(payload: dict, duration_s: float = 0.0):
@@ -142,27 +147,43 @@ async def websocket_endpoint(websocket: WebSocket):
                         
                         # A. Full Audio Uploads (e.g., from a REST client or file upload)
                         if not is_partial:
-                            await hard_interrupt(reason="Received full audio upload")
+                            logger.info(f"Received FULL audio payload ({len(audio_bytes)} bytes).")
+                            session_state["turn_start_t0"] = time.perf_counter()
+                            
+                            is_bot_active = (asyncio.get_running_loop().time() < session_state.get("playing_until", 0)) or session_state.get("is_generating", False)
+                            if is_bot_active:
+                                await hard_interrupt(reason="Received full audio upload")
+
                             mime = data_json.get('mimeType', 'audio/pcm;rate=16000')
                             live_request_queue.send_content(types.Content(
                                 parts=[types.Part(inline_data=types.Blob(mime_type=mime, data=audio_bytes))], role="user"
                             ))
+                            
+                            # Log visual indicator for the user
+                            try: await websocket.send_json({
+                                "source": "user", "type": "TextMessage", "content": "🎤 [Voice Message Uploaded]", 
+                                "m_id": str(uuid.uuid4()), "ts": datetime.now(timezone.utc).isoformat()
+                            })
+                            except Exception: pass
+                            
                             continue
 
                         # B. Realtime Streaming Audio (WebRTC / Browser Mic)
-                        # Push raw chunks directly to Google's Live API
                         live_request_queue.send_realtime(types.Blob(
                             mime_type=data_json.get('mimeType', 'audio/pcm;rate=16000'), 
                             data=audio_bytes
                         ))
-                        # Note: In an enterprise app, local VAD (like Silero) would go here 
-                        # to trigger Soft Pauses before Google's cloud VAD reacts.
 
                 # 2. Handle Text Inputs
                 elif msg_type == 'TextMessage':
                     content_text = data_json.get('content', '')
                     if content_text:
-                        await hard_interrupt(reason="User typed text")
+                        session_state["turn_start_t0"] = time.perf_counter()
+                        
+                        is_bot_active = (asyncio.get_running_loop().time() < session_state.get("playing_until", 0)) or session_state.get("is_generating", False)
+                        if is_bot_active:
+                            await hard_interrupt(reason="User typed text")
+                            
                         live_request_queue.send_content(types.Content(
                             parts=[types.Part(text=content_text)], role="user"
                         ))
@@ -172,7 +193,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     payload = data_json.get("widgetEvent", {}).get("payload", {})
                     text_content = "\n".join(f"{k}: {v}" for k, v in payload.items()).strip()
                     if text_content:
-                        await hard_interrupt(reason="User interacted with UI Widget")
+                        session_state["turn_start_t0"] = time.perf_counter()
+                        
+                        is_bot_active = (asyncio.get_running_loop().time() < session_state.get("playing_until", 0)) or session_state.get("is_generating", False)
+                        if is_bot_active:
+                            await hard_interrupt(reason="User interacted with UI Widget")
+                            
                         live_request_queue.send_content(types.Content(
                             parts=[types.Part(text=f"[User Submitted Form/Widget]:\n{text_content}")], role="user"
                         ))
@@ -188,32 +214,40 @@ async def websocket_endpoint(websocket: WebSocket):
             current_output_id = str(uuid.uuid4())
             acc_input = ""
             acc_output = ""
-            logged_in_tx = False
             
             async for event in runner.run_live(user_id=user_id, session_id=session_id, live_request_queue=live_request_queue, run_config=run_config):
                 if event is None: continue
                 
-                # 1. Cloud Interruption
-                if getattr(event, 'interrupted', False):
-                    if session_state["audio_state"] != "MUTED":
-                        await hard_interrupt(reason="Cloud VAD Interruption")
+                event_content = getattr(event, "content", None)
+                is_interrupted = getattr(event, 'interrupted', False) is True
+                is_turn_complete = getattr(event, 'turn_complete', False) is True
 
-                # 2. Input Transcription
+                if event_content: session_state["is_generating"] = True
+                
+                now = time.perf_counter()
+                t0 = session_state.get("turn_start_t0", now)
+
+                # 1. Cloud Interruption (Google VAD)
+                if is_interrupted and session_state["audio_state"] != "MUTED":
+                    await hard_interrupt(reason="Cloud VAD Interruption")
+
+                # 2. Input Transcription (SILENT ACCUMULATION WITH UI PLACEHOLDER)
                 if getattr(event, 'input_transcription', None):
                     tx = event.input_transcription
-                    # Safely extract text for Pylance
-                    in_text = tx.text if tx else None 
-                    
-                    if in_text:
-                        if not logged_in_tx:
-                            logged_in_tx = True
+                    if getattr(tx, "text", None):
+                        if not session_state["logged_first_in_tx"]:
+                            if t0 > 0: logger.info(f"[Latency] STT text streamed in {int((now - t0)*1000)}ms.")
+                            session_state["logged_first_in_tx"] = True
+                            
+                            # Send a placeholder with the mic icon to reserve the UI bubble
                             try: await websocket.send_json({
                                 "source": "user", "type": "TextMessage", "is_transcription": True,
                                 "content": "🎤 ...", "m_id": current_input_id, "ts": datetime.now(timezone.utc).isoformat()
                             })
                             except Exception: pass
                             
-                        raw_text = in_text.strip()
+                        raw_text = tx.text.strip()
+                        # Silently track raw string WITHOUT adding the mic icon again
                         if len(raw_text) > len(acc_input):
                             acc_input = raw_text
 
@@ -221,28 +255,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 # A. Output Transcription (Text)
                 if hasattr(event, 'output_transcription') and event.output_transcription:
                     tx = event.output_transcription
-                    out_text = tx.text # Grab the property
-                    
-                    # If out_text is a string and not empty
-                    if out_text and not getattr(tx, "finished", False):
-                        acc_output += out_text
+                    if not getattr(tx, "finished", False) and getattr(tx, "text", None):
+                        if not session_state["logged_first_out_tx"] and t0 > 0:
+                            logger.info(f"[Latency] First LLM text token in {int((now - t0)*1000)}ms.")
+                            session_state["logged_first_out_tx"] = True
+                            
+                        acc_output += tx.text
                         await route_bot_message({
                             "source": "assistant", "type": "TextMessage", "is_transcription": True,
-                            "content": out_text, "m_id": current_output_id, "ts": datetime.now(timezone.utc).isoformat()
+                            "content": tx.text, "m_id": current_output_id, "ts": datetime.now(timezone.utc).isoformat()
                         })
 
                 # B. Output Audio Binary
                 if hasattr(event, 'content') and event.content:
-                    session_state["is_generating"] = True
-                    
-                    # Safely default to an empty list if parts is None
-                    parts = event.content.parts or []
-                    
+                    parts = getattr(event.content, "parts", []) or []
                     for part in parts:
                         if hasattr(part, 'thought') and part.thought: continue
                         if hasattr(part, 'inline_data') and part.inline_data:
                             audio_chunk = part.inline_data.data
-                            if audio_chunk: # Ensure it has data
+                            if audio_chunk: 
+                                if not session_state["logged_first_audio"] and t0 > 0:
+                                    logger.info(f"[Latency] First audio byte streamed in {int((now - t0)*1000)}ms.")
+                                    session_state["logged_first_audio"] = True
+                                    
                                 await route_bot_message({
                                     "source": "assistant", "type": "AudioMessage",
                                     "data": base64.b64encode(audio_chunk).decode('utf-8'),
@@ -251,8 +286,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 }, duration_s=len(audio_chunk) / (24000 * 2))
 
                 # 4. Turn Complete / Finalize Output
-                if getattr(event, 'turn_complete', False):
+                if is_turn_complete:
                     session_state["is_generating"] = False
+                    if t0 > 0: logger.info(f"[Latency] Turn COMPLETE at {int((now - t0)*1000)}ms.")
                         
                     # Flush User Text Final to UI
                     if acc_input.strip():
@@ -269,14 +305,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Reset Session States
                     acc_input = ""
                     acc_output = ""
-                    logged_in_tx = False
                     current_input_id = str(uuid.uuid4())
                     current_output_id = str(uuid.uuid4())
                     
                     session_state["audio_state"] = "NORMAL"
                     session_state["pause_buffer"].clear()
+                    session_state["turn_start_t0"] = time.perf_counter()
+                    session_state["logged_first_in_tx"] = False
+                    session_state["logged_first_out_tx"] = False
+                    session_state["logged_first_audio"] = False
 
         except Exception as e:
+            # Safely catch Google's APIError wrapper for the 1011 disconnect
             if "1011" in str(e) or "Internal error" in str(e):
                 logger.info("Google Live API sent a known 1011 disconnect. Connection closed safely.")
             else:
@@ -298,5 +338,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 if __name__ == "__main__":
-	import uvicorn
-	uvicorn.run(app, host="0.0.0.0", port=8000)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

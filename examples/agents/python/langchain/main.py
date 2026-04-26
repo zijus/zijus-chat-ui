@@ -33,16 +33,18 @@ ZIJUS_CONFIG_ENCODED = os.getenv("ZIJUS_CONFIG_ENCODED", "")
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "agent_name": APP_NAME,
-        "zijus_config": ZIJUS_CONFIG_ENCODED,
-        "zijus_javascript": ZIJUS_JAVASCRIPT
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html", 
+        context={
+            "agent_name": APP_NAME,
+            "zijus_config": ZIJUS_CONFIG_ENCODED,
+            "zijus_javascript": ZIJUS_JAVASCRIPT
+        }
+    )
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # 1. JWT & Session Setup
     token = websocket.query_params.get("token", "")
     session_id = websocket.query_params.get("session_id", "")
     
@@ -55,16 +57,15 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     await websocket.send_json({"type": "session", "token": new_token})
 
-    # 2. Inject WebSocket Sender for Zijus Tools (Framework Agnostic UI Tools)
+    # 1. Inject WebSocket Sender for Zijus Tools 
     async def sender(msg: dict):
         await websocket.send_json(msg)
     set_websocket_sender(sender)
 
-    # 3. State Tracking for Barge-in Interruption
+    # 2. State Tracking for Barge-in Interruption
     current_ai_task: Optional[asyncio.Task] = None
 
     async def cancel_running_task(reason: str):
-        """Cancels the currently generating AI task and notifies the frontend to stop audio/text."""
         nonlocal current_ai_task
         if current_ai_task and not current_ai_task.done():
             logger.info(f"Interrupting AI generation: {reason}")
@@ -77,38 +78,37 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
             except Exception: pass
 
-    # 4. Background Agent Execution Task
+    # 3. Background Agent Execution Task
     async def process_agent_request(user_input: dict | str, m_id: str):
         response_m_id = str(uuid.uuid4())
         payload = build_message_payload(user_input)
         config = {"configurable": {"thread_id": session_id}}
-        stream_modes = ["messages", "updates", "custom"]
+        
+        # LangGraph stream mode "messages" returns individual message chunks
+        stream_modes = ["messages"] 
 
         try:
-            async for item in root_agent.astream(payload, stream_mode=stream_modes, config=config):
-                
-                # Normalize tuple format from LangGraph
-                if isinstance(item, tuple) and len(item) == 2:
-                    smode, chunk = item
-                else:
-                    smode, chunk = None, item
-
-                # Stream Tokens (Messages)
+            async for smode, chunk in root_agent.astream(payload, stream_mode=stream_modes, config=config): # type: ignore
                 if smode == "messages":
-                    text = getattr(chunk[0] if isinstance(chunk, tuple) else chunk, "content", None)
-                    if text and isinstance(text, str):
+                    # Extract the chunk part (index 0) from the tuple returned by LangGraph
+                    msg_chunk = chunk[0]
+                    
+                    # 1. Filter out internal Tool execution messages
+                    if getattr(msg_chunk, "type", "") == "tool":
+                        continue
+                        
+                    # 2. Only stream text chunks authored by the AI to the UI
+                    if hasattr(msg_chunk, "content") and isinstance(msg_chunk.content, str) and msg_chunk.content: # type: ignore
+                        # LangChain streams AIMessageChunks. Ensure it's not a tool call dict
+                        if getattr(msg_chunk, "tool_calls", None) or getattr(msg_chunk, "tool_call_chunks", None):
+                            continue
+                            
                         await websocket.send_json({
-                            "source": "assistant", "type": "TextMessage", "content": text,
+                            "source": "assistant", "type": "TextMessage", "content": msg_chunk.content, # type: ignore
                             "m_id": response_m_id, "stream_mode": "messages",
                             "ts": datetime.now(timezone.utc).isoformat()
                         })
-                
-                # Handle Tool Execution/Custom Updates (Optional UI tracking)
-                elif smode == "updates":
-                    # For Zijus tools, we usually let `set_websocket_sender` handle the UI natively.
-                    pass
 
-            # Signal completion
             await websocket.send_json({
                 "source": "assistant", "type": "FinalMessage", 
                 "m_id": response_m_id, "ts": datetime.now(timezone.utc).isoformat()
@@ -120,7 +120,7 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.error(f"LangGraph execution error: {e}")
             await websocket.send_json({"source": "assistant", "type": "error", "content": "Error processing request."})
 
-    # 5. Main Event Loop
+    # 4. Main Event Loop
     try:
         while True:
             raw = await websocket.receive_text()
@@ -130,21 +130,13 @@ async def websocket_endpoint(websocket: WebSocket):
             msg_type = data_json.get("type")
             m_id = data_json.get("m_id", str(uuid.uuid4()))
 
-            # Ignore control & placeholder events
             if msg_type in ["session", None]: continue
-            
-            if msg_type == "feedback":
-                await save_feedback()
-                continue
-                
-            if msg_type == "send_email":
-                await send_email()
-                continue
+            if msg_type == "feedback": await save_feedback(); continue
+            if msg_type == "send_email": await send_email(); continue
 
             # Handle Audio Barge-in
             if msg_type == "AudioMessage":
                 await cancel_running_task(reason="User started speaking")
-                # Route audio to an STT service here in production
                 continue
 
             # Handle UI Widget Events (Form Submissions, Button Clicks)
@@ -154,19 +146,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 text_content = "\n".join(f"{k}: {v}" for k, v in payload.items()).strip()
                 if text_content:
                     current_ai_task = asyncio.create_task(
-                        process_agent_request(f"[User Submitted Form/Widget]:\n{text_content}", m_id)
+                        process_agent_request(f"[User Submitted Widget]:\n{text_content}", m_id)
                     )
                 continue
 
             # Handle Standard Text Messages & Multimodal Uploads
             if msg_type == "TextMessage":
                 await cancel_running_task(reason="User typed a message")
-                
                 content_text = data_json.get("content", "")
                 
                 if "attachment" in data_json:
                     att = data_json["attachment"]
-                    
                     if att["type"].startswith("image/"):
                         user_input = {
                             "role": "user",
@@ -187,7 +177,3 @@ async def websocket_endpoint(websocket: WebSocket):
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: {session_id}")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))

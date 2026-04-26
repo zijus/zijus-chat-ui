@@ -1,79 +1,76 @@
-# LangChain + Zijus Chat UI Examples
+# 🎙️ LangChain / LangGraph + Zijus Chat UI Integrations
 
-This directory contains a **FastAPI application** demonstrating how to integrate the **Zijus Chat UI** with a simple **LangChain Agent**.
+This repository contains a production-ready **FastAPI** example demonstrating how to flawlessly integrate the **[Zijus Chat UI](https://github.com/zijus/zijus-chat-ui)** with **[LangChain & LangGraph](https://github.com/langchain-ai/langgraph)**.
+
+LangGraph is the industry standard for building cyclical, stateful AI agents. This example demonstrates how to give your LangGraph state machines a powerful, interactive frontend by native rendering UI components directly from the execution graph!
+
+---
+
+## 🌟 Key Features Demonstrated
+* **Tool-Driven UIs:** Demonstrates how to wrap our framework-agnostic `zijus-tools` using LangChain's `@tool` decorator. The LangGraph `ToolNode` automatically executes these functions to render Sliders and Buttons in the chat UI!
+* **Native StateGraphs:** Bypasses deprecated agent wrappers in favor of a pure, robust `StateGraph` implementation with conditional tool routing.
+* **Stream Filtering:** Shows exactly how to parse the LangGraph `astream(stream_mode="messages")` output to filter out internal `ToolMessage` execution logs so only clean AI text is streamed to the frontend.
+* **Stateful Sessions:** Implements `MemorySaver` checkpointers to ensure the graph remembers conversation history across WebSocket disconnects and reconnects.
+* **Native Multimodal Support:** Automatically formats image attachments into LangChain's standard `HumanMessage` dictionary schema for seamless vision analysis.
 
 ---
 
 ## 🚀 Getting Started
 
 ### 1. Create & activate a virtual environment
-
 ```bash
-python3 -m venv venv
-source venv/bin/activate      # macOS / Linux
-venv\Scripts\activate         # Windows
+python3 -m venv .venv
+source .venv/bin/activate      # macOS / Linux
+.venv\Scripts\activate         # Windows
 ```
 
 ### 2. Install dependencies
-
-Install dependencies from `requirements.txt`
+```bash
+pip install -r requirements.txt
+```
 
 ---
 
 ## ⚙️ Environment Setup
 
-There is a sample `env-sample` file.
-
-1. **Copy it:**
-
+1. **Create your local environment file:**
 ```bash
 cp env-sample .env
 ```
 
-2. **Edit `.env`** and update values as needed.
-
-> The default configuration assumes your FastAPI server runs at
-> **[http://localhost:8000](http://localhost:8000)**, so no changes are required for local use.
-
----
-
-## 🧩 Agent Setup (Required Before Running)
-
-The core logic for your LangChain agent lives inside:
-
-```
-my_agent/agent.py
-```
-
-This file contains the **agent definition**, including chains, tools, model configuration, response logic, and behavior.
-
-### ✅ Before starting the FastAPI server:
-
-1. Open the file:
-
-```
-my_agent/agent.py
-```
-
-2. Modify the agent’s logic as desired:
-
-   - Add tools
-   - Configure or replace chains
-   - Change prompts
-   - Integrate external APIs
-   - Customize response behavior
-
-3. Save your changes.
-   The FastAPI server will load this agent when it starts.
-
-> If running with `--reload`, your changes to `agent.py` will auto-apply.
-
-📘 **Need help with LangChain features, chains, or agent documentation?**
-See the official docs: **[https://docs.langchain.com/oss/python/langchain/overview](https://docs.langchain.com/oss/python/langchain/overview)**
+2. **Edit `.env`** and update the required values:
+* `OPENAI_API_KEY`: Your API key for the `gpt-4o-mini` model.
+* `JWT_SECRET_KEY`: Used in `utils.py` to securely sign WebSocket sessions.
+* `APP_NAME`: Name of your agent.
 
 ---
 
-## 🧪 Running the Examples
+## 🧩 Agent Setup (`my_agent/agent.py`)
+
+LangChain makes adding UI tools incredibly simple. Just decorate your asynchronous Zijus components with `@tool` and pass them into your `StateGraph` via a `ToolNode`:
+
+```python
+from langchain_core.tools import tool
+from zijus_tools import SendSlider
+
+@tool
+async def send_slider_tool(content: str, min_value: int, max_value: int, default_value: int) -> str:
+    """Renders an interactive range slider in the chat UI."""
+    await SendSlider(content=content, min_value=min_value, max_value=max_value, default_value=default_value)
+    
+    # Let the LangGraph execution flow know the tool succeeded!
+    return "UI rendered successfully. Stop generating and wait for the user."
+```
+
+When building the graph, you simply compile the Tool Node alongside your LLM:
+```python
+tool_node = ToolNode(tools=[send_slider_tool])
+graph_builder.add_node("tools", tool_node)
+```
+
+---
+
+## 🚀 Running the Example
 
 Start the FastAPI app:
 
@@ -81,39 +78,13 @@ Start the FastAPI app:
 uvicorn main:app --reload
 ```
 
-By default, the server starts on:
-
-```
-http://localhost:8000
-```
-
-This matches the default UI configuration.
+Open **http://localhost:8000** in your browser to test the reactive LangGraph agent!
 
 ---
 
 ## 🎨 Customizing the Zijus Chat UI
 
-Visit:
-
+Visit our visual editor to style the client:
 👉 **[https://www.zijus.com/zijus-chat-ui](https://www.zijus.com/zijus-chat-ui?utm_source=github)**
 
-Use the generator to create a **custom embed configuration** that matches your preferred style, colors, or layout.
-Replace the generated config in the `.env` file as needed.
-
----
-
-## 💬 Try Your Agent
-
-Once the server is running, open your browser:
-
-```
-http://localhost:8000
-```
-
-You should now see the **Zijus Chat UI** and be able to interact with your LangChain agent.
-
----
-
-## 🔧 Placeholder Functions
-
-The `utils.py` file contains placeholder helper functions that you may update or replace based on your needs.
+Use the generator to create a **custom embed configuration** that matches your preferred style, colors, typography, and avatar. Once generated, simply paste the encoded configuration string into your `.env` file under `ZIJUS_CONFIG_ENCODED`.

@@ -1,65 +1,111 @@
-from agent_framework.openai import OpenAIResponsesClient
-from agent_framework import ChatMessage, TextContent
+from agent_framework import Agent, Message
+from agent_framework.openai import OpenAIChatClient
 from dotenv import load_dotenv
-import json
+import os
+
+# Import framework-agnostic UI tools
+from zijus_tools import SendSlots, SendSlider
 
 load_dotenv()
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+instructions = """You are 'Finny', a financial assistant for Zijus Bank. Your ONLY job is to guide users through a strict 4-step loan pre-approval process.
+CRITICAL: You MUST use the provided tools to gather user input. DO NOT ask users to type their answers. If you need an answer, you MUST fire a tool.
+
+--- THE 4-STEP WORKFLOW ---
+
+STEP 1: Gathering the Loan Amount
+- If the user asks about a loan, DO NOT reply with a text question like 'How much do you need?'
+- You MUST immediately execute the `send_slider_tool` tool.
+- Tool Arguments -> content: 'Desired Loan Amount', min_value: 1000, max_value: 50000, default_value: 10000.
+- Say a brief greeting and wait for the tool response.
+
+STEP 2: Gathering the Repayment Term
+- Once you receive the loan amount from the slider, you MUST immediately execute the `send_slots_tool` tool to get the term.
+- Tool Arguments -> slots: ['12 Months', '24 Months', '36 Months'].
+- Say: 'Great, an X amount loan. How long would you like to take to pay it back?'
+
+STEP 3: The Calculation & Officer Prompt
+- Once you receive the term, calculate a mock estimated monthly payment.
+- Show the payment calculation clearly using markdown.
+- Then, ask if they want to speak to a loan officer, and you MUST use the `send_slots_tool` tool to get their answer.
+- Tool Arguments -> slots: ['Yes', 'No'].
+
+STEP 4: Booking the Appointment
+- If they clicked 'Yes', you MUST use the `send_slots_tool` tool one final time.
+- Tool Arguments -> slots: ['Tomorrow 10:00 AM', 'Tomorrow 2:00 PM', 'Next Monday 11:00 AM'].
+- If they clicked 'No', politely end the conversation.
+
+--- STRICT RULES ---
+1. NEVER ask a question that requires the user to type a structured answer. Always fire a tool.
+2. Only move to the next step AFTER receiving the tool response from the user.
+3. Keep your text responses incredibly short (1-2 sentences max). Let the UI tools do the talking."""
+
+# --- WRAP ZIJUS TOOLS ---
+async def send_slots_tool(slots: list[str]) -> str:
+    """Renders clickable choice buttons (slots) in the chat UI."""
+    await SendSlots(slots=slots)
+    return "UI rendered successfully. Stop generating and wait for the user."
+
+async def send_slider_tool(content: str, min_value: int, max_value: int, default_value: int) -> str:
+    """Renders an interactive range slider in the chat UI."""
+    await SendSlider(content=content, min_value=min_value, max_value=max_value, default_value=default_value)
+    return "UI rendered successfully. Stop generating and wait for the user."
+# ------------------------
+
 class RootAgent:
     def __init__(self):
-        self.chat_client = OpenAIResponsesClient(model_id="gpt-4.1-mini")
-        self.instructions = "You are a helpful AI assistant."
+        self.instructions = instructions
         self.agent = None
-        self.conversation_histories = {}  # Manual conversation history by session_id
+        self.conversation_histories = {}
     
     async def initialize_agent(self):
-        """Initialize the chat agent once"""
         if self.agent is None:
-            self.agent = self.chat_client.create_agent(
-                name="VisionAssistant",
+            client = OpenAIChatClient(
+                api_key=OPENAI_API_KEY,
+                model="gpt-5.4-mini"
+            )
+            
+            self.agent = Agent(
+                client=client,
+                name="FinnyAssistant",
                 instructions=self.instructions,
+                tools=[send_slots_tool, send_slider_tool]
             )
     
     def get_conversation_history(self, session_id):
-        """Get or create conversation history for the session"""
         if session_id not in self.conversation_histories:
             self.conversation_histories[session_id] = []
         return self.conversation_histories[session_id]
+
+    def _extract_text(self, chunk):
+        if hasattr(chunk, 'text') and chunk.text: return chunk.text
+        if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text') and chunk.delta.text: return chunk.delta.text
+        return ""
     
-    async def run_stream(self, task, session_id="default"):
-        """Run the agent with streaming response using manual context"""
+    async def run_stream(self, task: Message, session_id="default"):
         await self.initialize_agent()
         history = self.get_conversation_history(session_id)
         
-        # Build messages with full history
-        messages = []
-        
-        # Add system message
-        messages.append(ChatMessage(
-            role="system",
-            contents=[TextContent(text=self.instructions)]
-        ))
-        
-        # Add conversation history
-        for msg in history:
-            messages.append(msg)
-        
-        # Add current message
+        # Build messages with full history (using the unified Message object)
+        messages = [Message(role="system", contents=[self.instructions])]
+        messages.extend(history)
         messages.append(task)
         
-        # Run the agent
-        async for chunk in self.agent.run_stream(messages): #type: ignore
-            yield chunk
-        
-        # Store the new message in history
         history.append(task)
+        assistant_full_response = ""
         
-        # Also store the assistant's response (we'd need to capture it)
-        # This would require more complex handling to capture the full response
+        # Run stream using the new v1.2.0 signature
+        response_stream = await self.agent.run(messages=messages, stream=True)
+        async for chunk in response_stream: 
+            assistant_full_response += self._extract_text(chunk)
+            yield chunk
+            
+        if assistant_full_response:
+            history.append(Message(role="assistant", contents=[assistant_full_response]))
     
     async def close(self):
-        """Clean up the agent"""
         pass
 
-# Create a global agent instance
 root_agent = RootAgent()

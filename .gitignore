@@ -14,3 +14,7 @@ nohup.out
 *-serviceaccount.json
 agent*json
 app.yaml
+**/.DS_Store
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
